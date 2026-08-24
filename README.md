@@ -165,6 +165,25 @@ Copy only files that exist and restore them only while Transkrip is stopped.
 
 The npm commands are identical in macOS Terminal, Linux shells, Windows PowerShell, and Windows Terminal. Platform-specific package installation is needed only for optional external tools such as Git LFS, FFmpeg, Python, Ollama, or Emscripten.
 
+## Environment variables
+
+All environment variables are read through Node 24's `--env-file-if-exists` option from `.env` at the project root. Copy `.env.example` to `.env` before the first run.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TRANSKRIP_ADMIN_USERNAME` | — | Bootstrap administrator username; required only when the database has no users |
+| `TRANSKRIP_ADMIN_PASSWORD` | — | Bootstrap administrator password (12–128 chars); must be set together with the username |
+| `TRANSKRIP_ADMIN_DISPLAY_NAME` | falls back to username | Display name shown in the account bar for the bootstrap administrator |
+| `TRANSKRIP_HOST` | `127.0.0.1` | Bind address for the Node HTTP server |
+| `TRANSKRIP_PORT` | `8787` | Port for the Node HTTP server |
+| `TRANSKRIP_DB_PATH` | `data/transkrip.sqlite` | Absolute path for the SQLite database file |
+| `TRANSKRIP_STATIC` | `1` (serve `dist/`) | Set to `0` to skip serving static files (used by `scripts/dev.mjs` for Vite) |
+| `TRANSKRIP_ANALYSIS_PYTHON` | auto-discovered `.venv-analysis` | Absolute path to a Python interpreter for the DocETL worker |
+| `TRANSKRIP_ANALYSIS_AUTOSTART` | `1` | Set to `0` to prevent automatic DocETL worker startup |
+| `TRANSKRIP_DIARIZATION_MODEL` | `pyannote/speaker-diarization-community-1` | Hugging Face model ID used by the diarization sidecar |
+
+Bootstrap variables are needed only on the first run when the database has no users. After the administrator account is created and verified, remove every `TRANSKRIP_ADMIN_*` entry from `.env`. Partial credentials (only a username or only a password) are rejected.
+
 ## Local task history and database
 
 The API creates `data/transkrip.sqlite` on first run. Every real transcription creates one task, appends incoming Whisper segments atomically, then finalizes a structured speaker document. Open **Tasks** or `#tasks` to view completed rows, edit individual turns, rename a speaker throughout the document, or normalize all turns with the model selected in Settings. Raw Whisper text remains separate from formatted and normalized content.
@@ -594,6 +613,10 @@ Verify that the worker path is exactly `/whisper/engine-worker.js` and receives 
 - Run the real-browser smoke flow for worker, CSP, audio, or responsive UI changes.
 - Keep changes focused and use conventional commit prefixes such as `feat:`, `fix:`, `test:`, `docs:`, and `chore:`.
 - Do not commit `.env` files, credentials, transcripts, private recordings, exported content, or native model sources.
+
+## License
+
+Transkrip is released under the [MIT License](LICENSE). The bundled whisper.cpp WebAssembly runtime retains its original [MIT license](https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE). Speech models shipped in `public/models/` are subject to the [MIT license](https://github.com/openai/whisper/blob/main/LICENSE) of the original OpenAI Whisper project. The Cahya Medium model is derived from the [Sparkplugx1904/Indonesia-Whisper-GGML](https://huggingface.co/Sparkplugx1904/Indonesia-Whisper-GGML) fine-tune. DocETL is available under the [MIT license](https://github.com/ucbepic/docetl/blob/main/LICENSE) from UC Berkeley EPIC.
 
 ## Maintainer
 
