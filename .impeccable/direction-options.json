@@ -1,0 +1,72 @@
+{
+  "title": "Choose Transkrip’s visual world",
+  "question": "Keep the signal-room workspace, take an alternate, or ask for a fresh set.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Signal Room",
+      "kicker": "RECOMMENDED",
+      "lineage": "seismic monitoring rooms and field waveform records",
+      "thesis": "The transcript is a live signal record: every word remains anchored to audible evidence and local machine state.",
+      "palette": ["#0b1821", "#d7f0e7", "#67e0b3", "#f3b75d"],
+      "materials": ["dark instrument panels", "mint waveform traces", "paper-white transcript fields"],
+      "viewport": "A narrow secure-workspace rail, a large waveform horizon, and the active transcript aligned beneath the same time axis.",
+      "risk": "Can feel operationally dense if quiet review states are not given enough breathing room.",
+      "sketch": ".impeccable/sketches/signal-room.png"
+    },
+    {
+      "id": "challenger-nixie",
+      "label": "Nixie Counter",
+      "lineage": "laboratory counters and blackened steel instruments",
+      "thesis": "Local processing becomes a physical count of time, segments, and model work rather than an invisible spinner.",
+      "case": "Strong audience identification, but weaker product clarity: the counters dramatize progress more naturally than transcript review.",
+      "palette": ["#090b0c", "#f47b35", "#727a7c", "#f0eee8"],
+      "materials": ["smoked glass", "blackened steel", "engraved labels"],
+      "viewport": "A bank of glowing time counters sits above a restrained transcript ledger and transport controls.",
+      "risk": "The physical metaphor can overstate itself and reduce long-form reading comfort.",
+      "sketch": ".impeccable/sketches/nixie-counter.webp",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-nixie-laboratory-counter-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/signals-instruments-nixie-laboratory-counter.webp"
+    },
+    {
+      "id": "challenger-pc98",
+      "label": "Sixteen-Color Field",
+      "lineage": "Japanese 640×400 professional computer screens",
+      "thesis": "A fixed-region workstation gives audio, transcript, and actions unmistakable permanent places.",
+      "case": "Excellent product clarity, but weaker enterprise identification: the retro pixel language may read as novelty in formal deployments.",
+      "palette": ["#08163a", "#f7f2db", "#48c9b0", "#f0c94b"],
+      "materials": ["ordered dithering", "beveled text windows", "bitmap cells"],
+      "viewport": "A fixed audio field fills the upper frame while the editable transcript docks in a bordered lower window.",
+      "risk": "Pixel typography and integer scaling can limit density and accessibility.",
+      "sketch": ".impeccable/sketches/pc98-field.webp",
+      "hero": "https://impeccable.style/worlds/cards/digital-design-canon-pc98-sixteen-color-field-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/digital-design-canon-pc98-sixteen-color-field.webp"
+    },
+    {
+      "id": "challenger-crouwel",
+      "label": "Visible Grid",
+      "lineage": "Wim Crouwel construction-grid specimens",
+      "thesis": "A visible modular grid makes every timestamp, language state, and transcript block feel deliberately constructed.",
+      "case": "High enterprise confidence and clear hierarchy, but fuses less naturally with continuous audio than Signal Room.",
+      "palette": ["#f4f7f4", "#173a74", "#ff6b3d", "#9fb4c8"],
+      "materials": ["construction grid", "overscale modular type", "flat ink planes"],
+      "viewport": "A monumental TRANSKRIP wordmark locks into a visible grid above a rigorous two-column processing workspace.",
+      "risk": "The grid can become graphic decoration unless every alignment remains functional.",
+      "sketch": ".impeccable/sketches/visible-grid.webp",
+      "hero": "https://impeccable.style/worlds/cards/crouwel-grid-specimen-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/crouwel-grid-specimen.webp"
+    }
+  ],
+  "reroll": true,
+  "canon": true,
+  "canonCard": {
+    "label": "The enterprise standard",
+    "thesis": "A familiar three-column transcription dashboard, executed with restraint and precision.",
+    "palette": ["#f7f8fa", "#17202a", "#2d6cdf", "#d9dee7"],
+    "materials": ["neutral panels", "standard controls", "quiet blue status"],
+    "viewport": "A conventional app header, upload panel, waveform card, and transcript editor.",
+    "risk": "Immediately legible, but less distinctive and less able to make on-device processing memorable.",
+    "sketch": ".impeccable/sketches/canon.webp"
+  },
+  "steer": true
+}

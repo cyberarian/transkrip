@@ -1,0 +1,70 @@
+# JavaScript dependencies
+node_modules/
+
+# Build, test, and tool output
+dist/
+coverage/
+.nyc_output/
+.vite/
+.cache/
+*.tsbuildinfo
+.eslintcache
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Device-local application data
+# Includes tenant transcripts, staged audio, SQLite journals, and backups.
+data/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+
+# Locally derived/downloaded model sources
+# Browser-ready public/models/*.bin files are intentionally tracked with Git LFS.
+models-native/
+vendor/
+
+# Optional Python diarization environment and caches
+.venv/
+.venv-*/
+.python-runtime/
+.transkrip-cache/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime files
+logs/
+*.log
+*.pid
+*.pid.lock
+tmp/
+temp/
+
+# Local design-tool state (keep DESIGN.md and .impeccable/design.json)
+.impeccable/hook.cache.json
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.AppleDouble
+Thumbs.db
+Desktop.ini
+*.stackdump

@@ -1,0 +1,6 @@
+8e6f641c38a0a92b297917258952017d85c11239ef42567547e8ba7edcb3c651  public/brand-mark.svg
+60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe  public/models/ggml-base.bin
+ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb  public/models/ggml-small-q5_1.bin
+da09c51f05f78a727d37325e2d1ad7b78c20597593215276e820cd7fa1e92e0f  public/models/cahya-ggml-medium-q5_0.bin
+ca03b1c4fb158edcf98181d84ea1a2de6b9c25e33030a1fb6c2202ba105f79f1  public/whisper/main.js
+bdf852dba87f467df1e2685df065c74f52fff04e282166c6d5c292a48de330ea  public/whisper/engine-worker.js

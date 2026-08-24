@@ -1,0 +1,42 @@
+{
+  "name": "transkrip",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "npm@12.0.1",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "test": "vitest run src && node --test server/*.test.ts",
+    "typecheck": "tsc -b",
+    "assets:verify": "shasum -a 256 -c ASSETS.sha256",
+    "check": "npm run lint && npm run test && npm run typecheck && npm run assets:verify && npm run build",
+    "preview": "npm run start",
+    "start": "node --env-file-if-exists=.env server/index.ts",
+    "whisper:build": "bash scripts/build-whisper.sh"
+  },
+  "dependencies": {
+    "@fontsource/atkinson-hyperlegible-next": "^5.3.0",
+    "@fontsource/chivo-mono": "^5.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "eslint": "10.8.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.10.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vite": "8.2.0",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,8 @@
+# DocETL's Modal dependency accepts cbor2 5.x. Keep the final pure-Python
+# release so Intel macOS hosts do not need a Rust toolchain merely to install
+# this optional local worker. Linux, Windows, and Apple Silicon remain covered.
+cbor2==5.9.0
+# Newer releases no longer publish Intel-macOS wheels. This universal2 release
+# avoids a local Rust build while retaining wheels for supported Linux/Windows.
+cryptography==45.0.7
+docetl==0.3.0
