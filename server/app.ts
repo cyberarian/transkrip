@@ -1,3 +1,4 @@
+import { parseWorkspaceCheckpoint } from '../src/workspace-checkpoint.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { correctTextWithOllama } from './correction.ts'
 import { TRANSCRIPTION_STATUSES, transcriptionSearchExpression, type TranscriptionStore } from './database.ts'
@@ -170,6 +171,21 @@ export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetc
       const user = token ? store.getSession(hashSessionToken(token)) : null
       if (!user) throw new HttpError(401, 'Silakan masuk untuk melanjutkan.', 'UNAUTHENTICATED')
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) assertSameOrigin(request)
+
+      if (request.headers['x-workspace-owner'] && request.headers['x-workspace-owner'] !== String(user.id)) throw new HttpError(409, 'Akun aktif berubah. Muat ulang ruang kerja.', 'WORKSPACE_OWNER_CHANGED')
+      if (url.pathname === '/api/workspace') {
+        if (method === 'GET') { status = 200; send(response, status, { data: store.getWorkspace(user.id) }); return }
+        if (method === 'PUT') {
+          const body = await readBody(request)
+          if (!Number.isSafeInteger(body.revision) || (body.revision as number) < 0 || typeof body.operationId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(body.operationId)) throw new HttpError(400, 'Versi checkpoint tidak valid.')
+          let checkpoint
+          try { checkpoint = parseWorkspaceCheckpoint(body.checkpoint) } catch { throw new HttpError(400, 'Checkpoint ruang kerja tidak valid.') }
+          if (checkpoint.taskId !== null && !store.get(user.id, checkpoint.taskId)) throw new HttpError(404, 'Tugas checkpoint tidak ditemukan.')
+          const revision = store.saveWorkspace(user.id, body.revision as number, body.operationId, checkpoint)
+          if (revision === null) throw new HttpError(409, 'Ruang kerja berubah di tab lain. Unduh teks Anda sebelum memuat ulang.', 'CHECKPOINT_CONFLICT')
+          status = 200; send(response, status, { data: { revision } }); return
+        }
+      }
 
       if (method === 'GET' && url.pathname === '/api/auth/session') {
         status = 200; send(response, status, { data: { user } }); return

@@ -67,3 +67,17 @@ describe('restoreUnsafeWordChanges', () => {
     expect(restoreUnsafeWordChanges('Tetap sama.', 'Harus tetap sama.')).toBe('Tetap sama.')
   })
 })
+
+describe('incremental correction checkpoints', () => {
+  it('preserves the first corrected paragraph if the next request fails', async () => {
+    const { correctTranscriptLocally } = await import('./correction')
+    const { vi } = await import('vitest')
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ message: { content: '{"corrected":"Silakan cek."}' } }))).mockRejectedValueOnce(new Error('sleep interrupted connection'))
+    vi.stubGlobal('fetch', fetcher)
+    const saved: string[][] = []
+    try {
+      await expect(correctTranscriptLocally(['Silahkan cek.', 'Teks berikutnya.'], () => {}, 'local-model', async partial => { saved.push(partial) })).rejects.toThrow('sleep interrupted connection')
+      expect(saved).toEqual([['Silakan cek.']])
+    } finally { vi.unstubAllGlobals() }
+  })
+})

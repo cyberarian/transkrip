@@ -252,3 +252,21 @@ test('counts active analysis runs per tenant and globally', () => {
     assert.equal(store.countActiveAnalyses(), 2)
   } finally { store.close() }
 })
+
+test('persists owner-scoped workspace checkpoints across restart with idempotent optimistic writes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'transkrip-checkpoint-test-'))
+  const path = join(directory, 'db.sqlite')
+  let store = new TranscriptionStore(path, { username: 'bootstrap.admin', displayName: 'Admin', credential: { hash: 'a'.repeat(64), salt: 'b'.repeat(32) } })
+  const checkpoint = { version: 1 as const, audioFile: 'rapat.wav', audioHash: null, duration: 60, position: 12, language: 'id', modelName: 'base', selectedId: null, taskId: null, segments: [], resume: null }
+  try {
+    assert.equal(store.getWorkspace(1).revision, 0)
+    assert.equal(store.saveWorkspace(1, 0, 'first-operation', checkpoint), 1)
+    assert.equal(store.saveWorkspace(1, 0, 'first-operation', checkpoint), 1)
+    assert.equal(store.saveWorkspace(1, 0, 'stale-tab', checkpoint), null)
+    assert.equal(store.getWorkspace(999).checkpoint, null)
+    store.close()
+    store = new TranscriptionStore(path)
+    assert.deepEqual(store.getWorkspace(1), { revision: 1, checkpoint })
+    assert.equal(store.saveWorkspace(1, 1, 'second-operation', { ...checkpoint, position: 25 }), 2)
+  } finally { store.close() }
+})

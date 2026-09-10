@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useWorkspaceCheckpoint } from './use-workspace-checkpoint'
+import type { WorkspaceCheckpoint } from './workspace-checkpoint'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { decodeAudio, formatSrtTime, formatTime, MAX_AUDIO_FILE_BYTES } from './audio'
 import { Icon } from './icons'
 import { Brand } from './components/Brand'
 import type { EngineState, Segment } from './types'
 import { Waveform } from './components/Waveform'
 import { WhisperEngine } from './whisper'
+import { getCorrectionModel } from './correction-model'
 import { correctTranscriptLocally } from './correction'
 import { formatCleanTxt } from './export'
-import { appendTranscriptionSegment, checkDiarizationReadiness, completeTranscription, createTranscription, finalizeTranscription, saveTranscription, uploadDiarizationAudio } from './transcriptions-api'
+import { checkDiarizationReadiness, getTranscription, createTranscription, finalizeTranscription, saveTranscription, uploadDiarizationAudio } from './transcriptions-api'
 import { encodePcm16Wav } from './wav'
-import { awaitPersistence, createPersistenceRun, enqueueSegment, type PersistenceRun } from './persistence-run'
+import { awaitPersistence, createPersistenceRun, type PersistenceRun } from './persistence-run'
 import { getTranscriptionProfile } from './transcription-performance'
 import { ASR_MODELS, assessModelMemory, browserDeviceMemoryGb } from './asr-models'
 import { prepareDiarization, type DiarizationMode } from './diarization-mode'
@@ -30,10 +33,14 @@ function friendlyModelError(error: unknown) {
   return detail
 }
 
-function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'auto' }: { routeActive?: boolean; diarizationMode?: DiarizationMode }) {
+function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizationMode = 'auto' }: { ownerId?: number; routeActive?: boolean; diarizationMode?: DiarizationMode }) {
   const [engine, setEngine] = useState<EngineState>('missing')
   const [modelName, setModelName] = useState('Belum dipilih')
   const [audioName, setAudioName] = useState('Tidak ada audio')
+  const [audioHash, setAudioHash] = useState<string | null>(null)
+  const [resumeState, setResumeState] = useState<WorkspaceCheckpoint['resume']>(null)
+  const [restored, setRestored] = useState(false)
+  const [audioLoading, setAudioLoading] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [pcm, setPcm] = useState<Float32Array | null>(null)
   const [duration, setDuration] = useState(0)
@@ -54,28 +61,61 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
   const audioRef = useRef<HTMLAudioElement>(null)
   const whisperRef = useRef<WhisperEngine | null>(null)
   const setupRef = useRef<HTMLDialogElement>(null)
+  const [taskId, setTaskId] = useState<number | null>(null)
   const taskIdRef = useRef<number | null>(null)
   const persistenceRunRef = useRef<PersistenceRun | null>(null)
   const chunkSecondsRef = useRef(30)
+
+  const restore = useCallback((value: WorkspaceCheckpoint) => {
+    taskIdRef.current = value.taskId; setTaskId(value.taskId)
+    setAudioName(value.audioFile); setAudioHash(value.audioHash); setDuration(value.duration)
+    setCurrent(value.position); setLanguage(value.language); setModelName(value.modelName)
+    setSegments(value.segments); setSelectedId(value.selectedId); setResumeState(value.resume); setTaskDiarizationOverride(value.diarizationMode ?? null)
+    setRestored(true); setShowSetup(false)
+    setMessage('Ruang kerja dipulihkan. Pilih kembali rekaman yang sama untuk memutar atau melanjutkan; teks dan waktu sudah tersedia.')
+  }, [])
+  const checkpoint = useMemo<WorkspaceCheckpoint>(() => ({
+    version: 1, audioFile: audioName, audioHash, duration, position: Math.min(current, duration),
+    language, modelName, selectedId, taskId, segments, resume: resumeState, diarizationMode: taskDiarizationMode,
+  }), [audioName, audioHash, duration, current, language, modelName, selectedId, taskId, segments, resumeState, taskDiarizationMode])
+  const checkpointRef = useRef(checkpoint)
+  useEffect(() => { checkpointRef.current = checkpoint }, [checkpoint])
+  const { ready: checkpointReady, status: checkpointStatus, saveNow, retrySave } = useWorkspaceCheckpoint(ownerId, checkpoint, restore)
+  const saveNowRef = useRef(saveNow)
+  useEffect(() => { saveNowRef.current = saveNow }, [saveNow])
 
   useEffect(() => {
     const whisper = new WhisperEngine()
     whisper.onSegment = segment => {
       setSegments(value => [...value, segment]); setSelectedId(value => value || segment.id)
       const run = persistenceRunRef.current
-      if (run) enqueueSegment(run, segment, appendTranscriptionSegment).catch(() => { run.failed = true; setMessage('Transkrip tetap tersedia, tetapi satu bagian gagal masuk arsip SQLite lokal.') })
+      if (run) run.segments.push(segment)
     }
     whisper.onDone = () => {
       const run = persistenceRunRef.current
       if (!run) { setEngine('ready'); setMessage('Transkripsi selesai di sesi browser; arsip lokal tidak tersedia.'); return }
       setMessage('Transkripsi selesai; menyelesaikan arsip SQLite lokal…')
-      run.segmentQueue = awaitPersistence(run).then(() => run.failed ? completeTranscription(run.taskId, 'error') : finalizeTranscription(run.taskId, run.segments)).then(record => {
+      run.segmentQueue = awaitPersistence(run).then(async () => {
+        await saveNowRef.current({ ...checkpointRef.current, taskId: run.taskId, segments: run.segments.slice(), selectedId: run.segments[0]?.id ?? null })
+        return finalizeTranscription(run.taskId, run.segments)
+      }).then(async record => {
+        setResumeState(null)
+        await saveNowRef.current({ ...checkpointRef.current, taskId: run.taskId, segments: run.segments.slice(), selectedId: run.segments[0]?.id ?? null, resume: null })
         setMessage(run.failed ? 'Transkripsi selesai, tetapi arsip SQLite tidak lengkap dan ditandai gagal.' : record.diarization === 'local' ? `Transkripsi selesai dengan ${record.speakers.length} pembicara lokal.` : record.diarizationMode === 'off' ? 'Transkripsi selesai tanpa diarization sesuai pilihan tugas.' : 'Transkripsi selesai. Diarisasi lokal tidak tersedia; satu label pembicara digunakan.')
       }).catch(() => { run.failed = true; setMessage('Transkripsi selesai, tetapi status arsip lokal gagal diperbarui.') }).finally(() => {
         if (persistenceRunRef.current === run) { setEngine('ready'); setTaskDiarizationOverride(null) }
       })
     }
     whisper.onProgress = (completed, total) => setMessage(completed === total ? 'Menyelesaikan transkrip lokal…' : `Memproses bagian ${completed + 1} dari ${total} · batch ${chunkSecondsRef.current} detik…`)
+    whisper.onCheckpoint = async nextSample => {
+      const run = persistenceRunRef.current
+      if (!run) throw new Error('Arsip belum tersedia.')
+      const resume = { nextSample, segmentCount: run.segments.length, chunkSeconds: chunkSecondsRef.current }
+      const value = { ...checkpointRef.current, taskId: run.taskId, segments: run.segments.slice(), selectedId: run.segments[0]?.id ?? null, resume }
+      checkpointRef.current = value
+      setResumeState(resume)
+      await saveNowRef.current(value)
+    }
     whisperRef.current = whisper
     return () => whisper.destroy()
   }, [])
@@ -83,12 +123,14 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
+    const restorePosition = () => { audio.currentTime = checkpointRef.current.position }
+    audio.addEventListener('loadedmetadata', restorePosition, { once: true })
     const update = () => setCurrent(audio.currentTime)
     const stop = () => setPlaying(false)
     audio.addEventListener('timeupdate', update)
     audio.addEventListener('ended', stop)
     audio.addEventListener('pause', stop)
-    return () => { audio.removeEventListener('timeupdate', update); audio.removeEventListener('ended', stop); audio.removeEventListener('pause', stop) }
+    return () => { audio.removeEventListener('loadedmetadata', restorePosition); audio.removeEventListener('timeupdate', update); audio.removeEventListener('ended', stop); audio.removeEventListener('pause', stop) }
   }, [audioUrl])
 
   useEffect(() => {
@@ -112,6 +154,23 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
     if (!showSetup || dialog.open) return
     dialog.showModal()
   }, [routeActive, showSetup])
+
+  useEffect(() => {
+    if (engine !== 'transcribing' || !('wakeLock' in navigator)) return
+    let active = true
+    let lock: WakeLockSentinel | null = null
+    const acquire = async () => {
+      if (!active || document.visibilityState !== 'visible' || (lock && !lock.released)) return
+      try {
+        const granted = await navigator.wakeLock.request('screen')
+        if (!active) { await granted.release(); return }
+        lock = granted
+      } catch { /* Durable checkpoints work even when the OS refuses a wake lock. */ }
+    }
+    void acquire()
+    document.addEventListener('visibilitychange', acquire)
+    return () => { active = false; document.removeEventListener('visibilitychange', acquire); void lock?.release().catch(() => undefined) }
+  }, [engine])
 
   const active = segments.find(segment => segment.id === selectedId) || null
   const filtered = useMemo(() => segments.filter(segment => segment.text.toLowerCase().includes(search.toLowerCase())), [segments, search])
@@ -164,7 +223,7 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
   }
 
   const loadAudio = async (file: File) => {
-    if (engine === 'transcribing') {
+    if (!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing') {
       setMessage('Tunggu transkripsi dan penyimpanan SQLite selesai sebelum mengganti audio.')
       return
     }
@@ -172,25 +231,34 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
       setMessage('Audio lebih besar dari batas aman 250 MB. Potong atau kompres rekaman sebelum memuatnya.')
       return
     }
+    setAudioLoading(true)
     setMessage('Menyiapkan audio 16 kHz di perangkat…')
     try {
-      taskIdRef.current = null
-      persistenceRunRef.current = null
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+      const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+      if (restored && audioHash && hash !== audioHash) {
+        setMessage('Rekaman berbeda dari checkpoint. Pilih rekaman asli; teks yang dipulihkan tetap aman.')
+        return
+      }
       const decoded = await decodeAudio(file)
+      if (!restored) { taskIdRef.current = null; setTaskId(null); persistenceRunRef.current = null }
+      setAudioHash(hash)
       audioRef.current?.pause()
-      setPlaying(false); setCurrent(0)
+      setPlaying(false); if (!restored) setCurrent(0)
       setAudioUrl(URL.createObjectURL(file)); setAudioName(file.name)
-      setPcm(decoded.pcm); setDuration(decoded.duration); setSegments([]); setSelectedId(null)
+      setPcm(decoded.pcm); setDuration(decoded.duration)
+      if (!restored) { setSegments([]); setSelectedId(null); setResumeState(null) }
+      setRestored(false)
       setMessage('Audio siap. Tekan Transkripsikan untuk menjalankan whisper.cpp secara lokal.')
     } catch (error) {
       setMessage(error instanceof Error && error.message === 'audio-duration-out-of-range'
         ? 'Durasi audio harus lebih dari nol dan tidak boleh melebihi empat jam.'
         : 'Format audio tidak dapat dibaca oleh browser ini. Coba WAV, MP3, M4A, atau OGG.')
-    }
+    } finally { setAudioLoading(false) }
   }
 
   const transcribe = async () => {
-    if (!pcm || engine !== 'ready' || checkingDiarization) return
+    if (!pcm || engine !== 'ready' || checkingDiarization || audioLoading || !checkpointReady) return
     setCheckingDiarization(true)
     setMessage(taskDiarizationMode === 'off' ? 'Diarization dimatikan untuk tugas ini…' : 'Memeriksa kesiapan pyannote lokal sebelum memproses audio…')
     const diarization = await prepareDiarization(taskDiarizationMode, async () => (await checkDiarizationReadiness()).status === 'ready' ? 'ready' : 'unavailable')
@@ -204,35 +272,47 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
       setMessage('Audio ini melebihi batas WAV sementara untuk mode Required. Potong rekaman atau pilih Auto/Off.')
       return
     }
-    setSegments([]); setSelectedId(null); setEngine('transcribing')
+    const previous = resumeState ? segments.slice(0, resumeState.segmentCount) : []
+    setSegments(previous); setSelectedId(previous[0]?.id ?? null); setEngine('transcribing')
     setMessage(diarization.shouldUpload ? 'Pyannote lokal siap · menyiapkan worker transkripsi dan WAV sementara…' : taskDiarizationMode === 'off' ? 'Menyiapkan worker tanpa membuat WAV diarization…' : 'Pyannote belum tersedia · melanjutkan dengan satu label pembicara…')
-    taskIdRef.current = null
+    const recoveringTaskId = resumeState ? taskIdRef.current : null
+    taskIdRef.current = null; setTaskId(null)
     persistenceRunRef.current = null
     try {
-      const task = await createTranscription(audioName, language, fetch, taskDiarizationMode)
-      taskIdRef.current = task.id
+      const existing = recoveringTaskId ? await getTranscription(recoveringTaskId) : null
+      if (existing && existing.status !== 'processing' && existing.status !== 'error') {
+        taskIdRef.current = existing.id; setTaskId(existing.id); setResumeState(null); setEngine('ready')
+        await saveNow({ ...checkpointRef.current, taskId: existing.id, resume: null })
+        setMessage('Tugas ini sudah selesai. Checkpoint dipulihkan tanpa memproses ulang audio.')
+        return
+      }
+      const task = existing?.status === 'processing' ? existing : await createTranscription(audioName, language, fetch, taskDiarizationMode)
+      taskIdRef.current = task.id; setTaskId(task.id)
       const upload = wav ? uploadDiarizationAudio(task.id, wav).catch(() => undefined) : Promise.resolve()
       persistenceRunRef.current = createPersistenceRun(task.id, upload)
+      persistenceRunRef.current.segments = previous.slice()
     } catch {
-      if (taskDiarizationMode === 'required') {
-        setEngine('ready'); setMessage('Mode Required tidak dapat menyiapkan arsip dan WAV lokal. Transkripsi belum dimulai.'); return
-      }
-      setMessage('Arsip SQLite tidak tersedia; transkripsi tetap berjalan di memori browser…')
+      setEngine('ready'); setMessage('Penyimpanan lokal belum tersedia. Transkripsi belum dimulai agar progres tidak hilang.'); return
     }
     const profile = getTranscriptionProfile(modelName, navigator.hardwareConcurrency || 0, language, crossOriginIsolated)
     const startedAt = performance.now()
-    chunkSecondsRef.current = profile.chunkSeconds
+    chunkSecondsRef.current = resumeState?.chunkSeconds ?? profile.chunkSeconds
     setRuntimeProfile(`${profile.name} · ${profile.threads} thread · batch ${profile.chunkSeconds} dtk`)
     if (profile.language !== language) setMessage('Cahya Medium dikunci ke Bahasa Indonesia untuk mengurangi deteksi bahasa berulang…')
     try {
-      await whisperRef.current?.transcribe(pcm, profile.language, profile.threads, profile.chunkSeconds)
+      const resume = resumeState ?? { nextSample: 0, segmentCount: 0, chunkSeconds: profile.chunkSeconds }
+      const initial = { ...checkpointRef.current, taskId: taskIdRef.current, segments: previous, selectedId: previous[0]?.id ?? null, resume, language: profile.language }
+      checkpointRef.current = initial
+      setResumeState(resume); setLanguage(profile.language)
+      await saveNow(initial)
+      await whisperRef.current?.transcribe(pcm, profile.language, profile.threads, resume.chunkSeconds, resume.nextSample)
       const elapsedSeconds = Math.max(1, (performance.now() - startedAt) / 1000)
-      setRuntimeProfile(`${profile.name} · ${(duration / elapsedSeconds).toFixed(2)}× realtime · ${profile.threads} thread`)
+      setRuntimeProfile(`${profile.name} · ${(Math.max(0, duration - (resumeState?.nextSample ?? 0) / 16000) / elapsedSeconds).toFixed(2)}× realtime · ${profile.threads} thread`)
     }
     catch (error) {
       const run = persistenceRunRef.current
-      if (run) { run.failed = true; void run.segmentQueue.then(() => completeTranscription(run.taskId, 'error')).catch(() => undefined) }
-      setEngine('error'); setMessage(error instanceof Error ? error.message : String(error))
+      if (run) { run.failed = true; void saveNow({ ...checkpointRef.current, taskId: run.taskId, segments: run.segments.slice(), selectedId: run.segments[0]?.id ?? null }).catch(() => undefined) }
+      setEngine('error'); setMessage(`${error instanceof Error ? error.message : String(error)} Progres tersimpan tetap tersedia. Muat kembali model, lalu lanjutkan.`)
     }
   }
 
@@ -263,11 +343,15 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
   }
 
   const correctTranscript = async () => {
-    if (!segments.length || correcting) return
+    if (!segments.length || correcting || engine === 'transcribing' || !checkpointReady) return
     setCorrecting(true)
     setMessage('Model lokal sedang menyiapkan koreksi ejaan…')
     try {
-      const result = await correctTranscriptLocally(segments.map(segment => segment.text), (done, total) => setMessage(`Model lokal mengoreksi paragraf ${done} dari ${total}…`))
+      const result = await correctTranscriptLocally(segments.map(segment => segment.text), (done, total) => setMessage(`Model lokal mengoreksi paragraf ${done} dari ${total}…`), getCorrectionModel(), async partial => {
+        const updated = segments.map((segment, index) => ({ ...segment, text: partial[index] ?? segment.text }))
+        setSegments(updated)
+        await saveNow({ ...checkpointRef.current, segments: updated })
+      })
       const correctedSegments = segments.map((segment, index) => ({ ...segment, text: result.corrected[index] ?? segment.text }))
       setSegments(correctedSegments)
       if (taskIdRef.current) await saveTranscription(taskIdRef.current, correctedSegments.map(segment => segment.text).join('\n\n'))
@@ -278,7 +362,7 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
     } finally { setCorrecting(false) }
   }
 
-  return <main className="app-shell">
+  return <main className="app-shell" data-recoverable="true">
     <header className="command-bar">
       <Brand href="#" label="Beranda Transkrip"/>
       <div className="privacy-state"><Icon name="shield"/><span><b>Audio tetap di perangkat</b><small>Tidak diunggah ke cloud</small></span></div>
@@ -290,6 +374,12 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
       <a className="secondary-nav about-nav" href="#about"><Icon name="info"/><span><b>About</b><small>Sistem &amp; maintainer</small></span></a>
     </header>
 
+    <section className="checkpoint-bar" aria-label="Penyimpanan ruang kerja">
+      <div><Icon name="shield"/><span role="status">{checkpointStatus}</span></div>
+      {(restored || resumeState) && <p>{resumeState ? `Progres tersimpan sampai ${formatTime(resumeState.nextSample / 16000)}. ` : ''}{!pcm ? 'Pilih rekaman asli untuk melanjutkan audio. ' : ''}{engine !== 'ready' && engine !== 'transcribing' ? 'Muat model untuk melanjutkan transkripsi.' : ''}</p>}
+      <button onClick={retrySave}>Simpan sekarang</button>
+    </section>
+
     <section className="audio-deck" aria-label="Audio player">
       <div className="deck-heading"><span className="file-name"><Icon name="folder"/>{audioName}</span><span>{formatTime(current, true)} / {formatTime(duration, true)}</span></div>
       <Waveform pcm={pcm} duration={duration} current={current} onSeek={seek}/>
@@ -298,9 +388,9 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
         <button className="primary-transport" aria-label={playing ? 'Jeda' : 'Putar'} onClick={togglePlay} disabled={!audioUrl}><Icon name={playing ? 'pause' : 'play'}/></button>
         <button className="seek-step" aria-label="Maju 5 detik" onClick={() => seek(current + 5)}><Icon name="forward"/></button>
         <span className="transport-time">{formatTime(current, true)}</span>
-        <label className="file-action"><Icon name="upload"/><span>Pilih audio</span><input disabled={engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label>
+        <label className="file-action"><Icon name="upload"/><span>Pilih audio</span><input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label>
         <label className="diarization-task-mode"><span>Pembicara</span><select aria-label="Mode diarization untuk transkripsi ini" value={taskDiarizationMode} disabled={engine === 'transcribing' || checkingDiarization} onChange={event => setTaskDiarizationOverride(event.target.value as DiarizationMode)}><option value="auto">Auto</option><option value="required">Required</option><option value="off">Off</option></select></label>
-        <button className="run-button" disabled={!pcm || engine !== 'ready' || checkingDiarization} onClick={transcribe}>{checkingDiarization ? 'Memeriksa…' : engine === 'transcribing' ? 'Sedang memproses…' : 'Transkripsikan'}</button>
+        <button className="run-button" disabled={!checkpointReady || audioLoading || !pcm || engine !== 'ready' || checkingDiarization} onClick={transcribe}>{checkingDiarization ? 'Memeriksa…' : engine === 'transcribing' ? 'Sedang memproses…' : resumeState ? 'Lanjutkan transkripsi' : 'Transkripsikan'}</button>
       </div>
     </section>
 
@@ -310,10 +400,10 @@ function App({ routeActive = true, diarizationMode: accountDiarizationMode = 'au
         <div className="transcript-body">
           {filtered.length ? filtered.map((segment) => <article key={segment.id} className={`segment ${selectedId === segment.id ? 'active' : ''}`}>
             <button className={`language-tag lang-${segment.language}`} aria-label="Pilih segmen dan buka bukti audio" onClick={() => { setSelectedId(segment.id); seek(segment.start) }}>{segment.language === 'id' ? 'ID' : segment.language === 'en' ? 'EN' : 'AU'}</button>
-            <textarea aria-label="Paragraf transkrip" lang={segment.language === 'auto' ? undefined : segment.language} spellCheck value={segment.text} rows={Math.max(2, Math.ceil(segment.text.length / 76))} onFocus={() => setSelectedId(segment.id)} onChange={e => setSegments(values => values.map(value => value.id === segment.id ? { ...value, text: e.target.value } : value))}/>
-          </article>) : segments.length ? <div className="empty-transcript" role="status"><h2>Tidak ada hasil</h2><p>Tidak ada paragraf yang cocok dengan “{search}”. Ubah atau hapus kata pencarian untuk melihat transkrip lagi.</p></div> : <div className="empty-transcript"><div className="empty-raster" aria-hidden="true"/><h2>Ruang tinjau siap</h2><p>Masukkan model multilingual dan audio untuk membuat transkrip Bahasa Indonesia atau English. Semua pemrosesan terjadi di perangkat ini.</p><div><label className="file-action prominent"><Icon name="upload"/>Pilih audio<input disabled={engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label><button onClick={() => { setSegments(demoSegments); setSelectedId('d1'); setDuration(60); setMessage('Mode pratinjau — teks ini hanya data ilustratif.') }}>Pratinjau ruang kerja</button></div></div>}
+            <textarea readOnly={!checkpointReady || correcting || engine === 'transcribing'} aria-label="Paragraf transkrip" lang={segment.language === 'auto' ? undefined : segment.language} spellCheck value={segment.text} rows={Math.max(2, Math.ceil(segment.text.length / 76))} onFocus={() => setSelectedId(segment.id)} onChange={e => setSegments(values => values.map(value => value.id === segment.id ? { ...value, text: e.target.value } : value))}/>
+          </article>) : segments.length ? <div className="empty-transcript" role="status"><h2>Tidak ada hasil</h2><p>Tidak ada paragraf yang cocok dengan “{search}”. Ubah atau hapus kata pencarian untuk melihat transkrip lagi.</p></div> : <div className="empty-transcript"><div className="empty-raster" aria-hidden="true"/><h2>Dari percakapan,<br/>menjadi pemahaman.</h2><p>Masukkan model multilingual dan audio untuk membuat transkrip Bahasa Indonesia atau English. Semua pemrosesan terjadi di perangkat ini.</p><div><label className="file-action prominent"><Icon name="upload"/>Pilih audio<input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label><button onClick={() => { setSegments(demoSegments); setSelectedId('d1'); setDuration(60); setMessage('Mode pratinjau — teks ini hanya data ilustratif.') }}>Pratinjau ruang kerja</button></div></div>}
         </div>
-        <div className="edit-bar"><span>{segments.length} paragraf</span><span>{segments.reduce((count, segment) => count + (segment.text.match(/\S+/g)?.length ?? 0), 0)} kata</span><button disabled={!segments.length || correcting} onClick={correctTranscript}><Icon name="edit"/>{correcting ? 'Model bekerja…' : 'Koreksi ejaan lokal'}</button><button disabled={!segments.length} onClick={() => exportTranscript('txt')}><Icon name="download"/>TXT per kalimat</button><button disabled={!segments.length} onClick={() => exportTranscript('srt')}><Icon name="download"/>SRT + waktu</button></div>
+        <div className="edit-bar"><span>{segments.length} paragraf</span><span>{segments.reduce((count, segment) => count + (segment.text.match(/\S+/g)?.length ?? 0), 0)} kata</span><button disabled={!segments.length || correcting || engine === 'transcribing' || !checkpointReady} onClick={correctTranscript}><Icon name="edit"/>{correcting ? 'Model bekerja…' : 'Koreksi ejaan lokal'}</button><button disabled={!segments.length} onClick={() => exportTranscript('txt')}><Icon name="download"/>TXT per kalimat</button><button disabled={!segments.length} onClick={() => exportTranscript('srt')}><Icon name="download"/>SRT + waktu</button></div>
       </section>
 
       <aside className="evidence-panel" aria-labelledby="evidence-heading">

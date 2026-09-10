@@ -228,3 +228,23 @@ test('bounds queued analysis work per tenant', async () => {
     assert.equal((response.body.error as { code: string }).code, 'ANALYSIS_QUEUE_FULL')
   } finally { store.close() }
 })
+
+test('workspace checkpoints require the current owner and reject stale, foreign, or audio-bearing snapshots', async () => {
+  const { store, handler } = await fixture()
+  try {
+    assert.equal((await invoke(handler, 'GET', '/api/workspace')).status, 401)
+    const admin = await login(handler, 'bootstrap.admin', 'bootstrap password value')
+    const checkpoint = { version: 1, audioFile: 'private.wav', audioHash: null, duration: 60, position: 12, language: 'id', modelName: 'base', selectedId: null, taskId: null, segments: [], resume: null }
+    const write = { revision: 0, operationId: 'operation-one', checkpoint }
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', write, admin.cookie)).status, 200)
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', write, admin.cookie)).status, 200)
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', { ...write, operationId: 'stale-tab' }, admin.cookie)).status, 409)
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', { ...write, checkpoint: { ...checkpoint, audio: [1, 2] } }, admin.cookie)).status, 400)
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', write, admin.cookie, { 'x-workspace-owner': '999' })).status, 409)
+    await invoke(handler, 'POST', '/api/admin/users', { username: 'checkpoint.tenant', displayName: 'Tenant', role: 'user', password: 'tenant password value' }, admin.cookie)
+    const tenant = await login(handler, 'checkpoint.tenant', 'tenant password value')
+    assert.deepEqual((await invoke(handler, 'GET', '/api/workspace', undefined, tenant.cookie)).body.data, { revision: 0, checkpoint: null })
+    const task = store.create(1, 'private.wav')
+    assert.equal((await invoke(handler, 'PUT', '/api/workspace', { ...write, checkpoint: { ...checkpoint, taskId: task.id } }, tenant.cookie)).status, 404)
+  } finally { store.close() }
+})

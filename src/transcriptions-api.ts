@@ -85,8 +85,8 @@ export async function finalizeTranscription(id: number, segments: Segment[], fet
   return (await readJson(response)).data
 }
 
-export async function saveSpeakerDocument(id: number, document: SpeakerDocument, fetcher: Fetcher = fetch) {
-  const response = await fetcher(`/api/transcriptions/${id}/document`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ document }) })
+export async function saveSpeakerDocument(id: number, document: SpeakerDocument, fetcher: Fetcher = fetch, ownerId?: number) {
+  const response = await fetcher(`/api/transcriptions/${id}/document`, { method: 'PATCH', headers: { ...JSON_HEADERS, ...(ownerId ? { 'X-Workspace-Owner': String(ownerId) } : {}) }, body: JSON.stringify({ document }) })
   return (await readJson(response)).data
 }
 

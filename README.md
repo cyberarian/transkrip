@@ -623,3 +623,11 @@ Transkrip is released under the [MIT License](LICENSE). The bundled whisper.cpp 
 **Adnuri Mohamidi** — project maintainer and release owner.
 
 Maintenance responsibilities include privacy-boundary review, dependency and model approval, release-gate verification, production-host configuration, and rollback readiness.
+
+### Preserving work through idle time and sleep
+
+Workspace edits and completed transcription chunks now checkpoint automatically to local SQLite. Watch **Tersimpan di perangkat** in the workspace. If saving fails, keep the tab open, restore the local service, and choose **Simpan sekarang**; unfinished chunks stop before advancing without a checkpoint.
+
+After a reload, your current transcript and timestamps return. To play or continue transcribing, reselect the original audio file and load the model again. The file is fingerprint-checked; audio is never stored permanently. An expired session locks the interface while retaining the working session for same-account login. Dialogue edits in Tasks also autosave.
+
+See [durable workspace recovery](docs/decisions/002-durable-workspace-recovery.md) for guarantees, limits, and performance evidence.

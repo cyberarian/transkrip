@@ -1,3 +1,4 @@
+import { useDialogueAutosave } from '../use-dialogue-autosave'
 import { Fragment, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { getCorrectionModel } from '../correction-model'
 import { formatCleanTxt } from '../export'
@@ -13,7 +14,7 @@ const taskDate = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'shor
 const taskTime = new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit' })
 type TaskLedgerRow = TranscriptionSummary & Partial<Pick<TranscriptionSearchResult, 'excerpt'>>
 
-export function TasksPage() {
+export function TasksPage({ ownerId }: { ownerId: number }) {
   const [rows, setRows] = useState<TaskLedgerRow[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [languageFilter, setLanguageFilter] = useState<'' | 'id' | 'en' | 'auto'>('')
@@ -28,6 +29,11 @@ export function TasksPage() {
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('Membaca arsip SQLite lokal…')
   const [error, setError] = useState<string | null>(null)
+  const autosave = useDialogueAutosave(ownerId, setMessage)
+  const editDocument = (next: SpeakerDocument) => {
+    setDocument(next)
+    if (openId !== null) autosave.stage(openId, next)
+  }
 
   const load = useCallback(async () => {
     setLoading(true); setError(null)
@@ -77,7 +83,7 @@ export function TasksPage() {
   const toggle = async (row: TranscriptionSummary) => {
     if (openId === row.id) { setOpenId(null); setRecoveryStatus(null); return }
     setBusyId(row.id)
-    try { showRecord(await getTranscription(row.id)) }
+    try { await autosave.flush(); showRecord(await getTranscription(row.id)) }
     catch (loadError) { setMessage(loadError instanceof Error ? loadError.message : String(loadError)) }
     finally { setBusyId(null) }
   }
@@ -104,14 +110,14 @@ export function TasksPage() {
   const remove = async (row: TranscriptionSummary) => {
     if (deleteConfirmId !== row.id) { setDeleteConfirmId(row.id); setMessage(`Tekan sekali lagi untuk menghapus tugas #${row.id} secara permanen.`); return }
     setBusyId(row.id)
-    try { await deleteTranscription(row.id); setRows(values => values.filter(value => value.id !== row.id)); setOpenId(null); setDeleteConfirmId(null); setMessage(`Tugas #${row.id} dihapus.`) }
+    try { await autosave.flush(); await deleteTranscription(row.id); setRows(values => values.filter(value => value.id !== row.id)); setOpenId(null); setDeleteConfirmId(null); setMessage(`Tugas #${row.id} dihapus.`) }
     catch (removeError) { setMessage(removeError instanceof Error ? removeError.message : String(removeError)) }
     finally { setBusyId(null) }
   }
 
   const refreshProgress = async (row: TranscriptionSummary) => {
     setBusyId(row.id)
-    try { showRecord(await getTranscription(row.id)); setMessage(`Progres tugas #${row.id} diperbarui dari SQLite.`) }
+    try { await autosave.flush(); showRecord(await getTranscription(row.id)); setMessage(`Progres tugas #${row.id} diperbarui dari SQLite.`) }
     catch (loadError) { setMessage(loadError instanceof Error ? loadError.message : String(loadError)) }
     finally { setBusyId(null) }
   }
@@ -119,6 +125,7 @@ export function TasksPage() {
   const save = async (row: TranscriptionSummary) => {
     setBusyId(row.id)
     try {
+      await autosave.flush()
       const cleaned = {
         speakers: document.speakers.map(speaker => ({ ...speaker, label: speaker.label.trim() })),
         blocks: document.blocks.map(block => ({ ...block, speakerLabel: document.speakers.find(speaker => speaker.id === block.speakerId)?.label.trim() || block.speakerLabel })),
@@ -132,7 +139,7 @@ export function TasksPage() {
 
   const normalize = async (row: TranscriptionSummary) => {
     setBusyId(row.id); setMessage(`Model ${getCorrectionModel()} menormalkan dialog #${row.id} secara lokal…`)
-    try { updateRecord(await normalizeSpeakerDocument(row.id, document, getCorrectionModel())); setMessage(`Dialog #${row.id} dinormalisasi dan disimpan.`) }
+    try { await autosave.flush(); updateRecord(await normalizeSpeakerDocument(row.id, document, getCorrectionModel())); setMessage(`Dialog #${row.id} dinormalisasi dan disimpan.`) }
     catch (normalizeError) { setMessage(normalizeError instanceof Error ? normalizeError.message : String(normalizeError)) }
     finally { setBusyId(null) }
   }
@@ -154,7 +161,7 @@ export function TasksPage() {
         <colgroup><col className="task-col-id"/><col className="task-col-audio"/><col className="task-col-language"/><col className="task-col-created"/><col className="task-col-status"/><col className="task-col-actions"/></colgroup>
         <thead><tr><th scope="col">ID</th><th scope="col">Rekaman</th><th scope="col">Bahasa</th><th scope="col">Dibuat</th><th scope="col">Status</th><th scope="col">Tindakan</th></tr></thead>
         <tbody>{rows.map(row => <Fragment key={row.id}><tr className={openId === row.id ? 'open' : undefined}><td data-label="ID"><span className="task-id">#{String(row.id).padStart(4, '0')}</span></td><td data-label="Rekaman"><div className="task-audio-cell"><strong className="task-audio-name" title={row.audioFile}>{row.audioFile}</strong>{row.excerpt && row.excerpt !== row.audioFile && <small className="task-search-excerpt">{row.excerpt}</small>}</div></td><td data-label="Bahasa"><span className="task-language">{languageLabels[row.language] || row.language.toUpperCase()}</span></td><td data-label="Dibuat"><time className="task-created" dateTime={row.createdAt}><span>{taskDate.format(new Date(row.createdAt))}</span><small>{taskTime.format(new Date(row.createdAt))}</small></time></td><td data-label="Status"><div className="task-status-copy"><span className={`task-status status-${row.status}`}>{labels[row.status]}</span><small className="task-status-detail">{row.status === 'processing' ? 'Teks parsial · SQLite' : `${row.speakers.length || 1} pembicara · ${row.diarization === 'local' ? 'pyannote lokal' : 'label default'}`}</small></div></td><td data-label="Tindakan"><div className="task-row-actions"><button aria-expanded={openId === row.id} aria-controls={`editor-${row.id}`} disabled={busyId !== null} onClick={() => void toggle(row)}><Icon name={row.status === 'processing' ? 'refresh' : 'edit'}/><span>{busyId === row.id ? 'Membuka…' : openId === row.id ? 'Tutup' : row.status === 'processing' ? 'Lihat progres' : 'Buka dialog'}</span></button>{row.status !== 'processing' && <a href={`#analysis?source=${row.id}`}><Icon name="analysis"/><span>Analysis</span></a>}<button className={deleteConfirmId === row.id ? 'confirm-delete' : ''} aria-label={deleteConfirmId === row.id ? `Konfirmasi hapus tugas ${row.id}` : `Hapus tugas ${row.id}`} disabled={busyId !== null} onClick={() => void remove(row)}><Icon name="trash"/><span>{deleteConfirmId === row.id ? 'Konfirmasi' : 'Hapus'}</span></button></div></td></tr>
-          {openId === row.id && <tr className="task-editor-row"><td className="task-editor-cell" colSpan={6}>{recoveryStatus ? <div id={`editor-${row.id}`} className="processing-preview"><header><div><strong>{recoveryStatus === 'processing' ? 'Sedang diproses atau sesi terputus' : 'Transkripsi terhenti'}</strong><p>{recoveryStatus === 'processing' ? 'Teks berikut sudah tersimpan di SQLite. Muat ulang jika proses masih berjalan, atau tandai terputus untuk menutup tugas tanpa menghapus hasil parsial.' : 'Bagian yang berhasil disimpan sebelum gangguan tetap tersedia sebagai berkas TXT lokal.'}</p></div><div className="recovery-actions"><button onClick={() => downloadRecovery(row)} disabled={!partialText.trim()}><Icon name="download"/>Unduh TXT parsial</button>{recoveryStatus === 'processing' && <><button onClick={() => void refreshProgress(row)} disabled={busyId !== null}><Icon name="refresh"/>{busyId === row.id ? 'Memuat…' : 'Muat ulang progres'}</button><button onClick={() => void markInterrupted(row)} disabled={busyId !== null}><Icon name="close"/>Tandai terputus</button></>}</div></header><textarea aria-label={`Teks parsial tugas ${row.id}`} readOnly value={partialText} rows={Math.max(6, Math.ceil(partialText.length / 90))}/></div> : <div id={`editor-${row.id}`} className="dialogue-editor"><section className="speaker-roster" aria-label="Nama pembicara"><h3>Nama pembicara</h3>{document.speakers.map(speaker => <label key={speaker.id}><span>{speaker.id.replace('SPEAKER_', '#')}</span><input value={speaker.label} maxLength={100} onChange={event => { try { setDocument(value => renameSpeaker(value, speaker.id, event.target.value)) } catch { /* retain the last valid name */ } }}/></label>)}</section><section className="speaker-blocks" aria-label="Dialog per pembicara">{document.blocks.map((block, index) => <article key={block.id}><header><strong>{block.speakerLabel}</strong><span>{block.start.toFixed(1)}–{block.end.toFixed(1)} dtk</span></header><textarea aria-label={`Dialog ${block.speakerLabel}, blok ${index + 1}`} rows={Math.max(3, Math.ceil(block.text.length / 90))} value={block.text} onChange={event => setDocument(value => ({ ...value, blocks: value.blocks.map(item => item.id === block.id ? { ...item, text: event.target.value } : item) }))}/></article>)}</section><footer><span>{document.blocks.length} giliran · {document.speakers.length} pembicara</span><button onClick={() => void normalize(row)} disabled={busyId === row.id}><Icon name="chip"/>Normalisasi bilingual</button><button className="task-save" onClick={() => void save(row)} disabled={busyId === row.id}><Icon name="check"/>{busyId === row.id ? 'Memproses…' : 'Simpan dialog'}</button></footer></div>}</td></tr>}
+          {openId === row.id && <tr className="task-editor-row"><td className="task-editor-cell" colSpan={6}>{recoveryStatus ? <div id={`editor-${row.id}`} className="processing-preview"><header><div><strong>{recoveryStatus === 'processing' ? 'Sedang diproses atau sesi terputus' : 'Transkripsi terhenti'}</strong><p>{recoveryStatus === 'processing' ? 'Teks berikut sudah tersimpan di SQLite. Muat ulang jika proses masih berjalan, atau tandai terputus untuk menutup tugas tanpa menghapus hasil parsial.' : 'Bagian yang berhasil disimpan sebelum gangguan tetap tersedia sebagai berkas TXT lokal.'}</p></div><div className="recovery-actions"><button onClick={() => downloadRecovery(row)} disabled={!partialText.trim()}><Icon name="download"/>Unduh TXT parsial</button>{recoveryStatus === 'processing' && <><button onClick={() => void refreshProgress(row)} disabled={busyId !== null}><Icon name="refresh"/>{busyId === row.id ? 'Memuat…' : 'Muat ulang progres'}</button><button onClick={() => void markInterrupted(row)} disabled={busyId !== null}><Icon name="close"/>Tandai terputus</button></>}</div></header><textarea aria-label={`Teks parsial tugas ${row.id}`} readOnly value={partialText} rows={Math.max(6, Math.ceil(partialText.length / 90))}/></div> : <div id={`editor-${row.id}`} className="dialogue-editor"><section className="speaker-roster" aria-label="Nama pembicara"><h3>Nama pembicara</h3>{document.speakers.map(speaker => <label key={speaker.id}><span>{speaker.id.replace('SPEAKER_', '#')}</span><input value={speaker.label} maxLength={100} onChange={event => { try { editDocument(renameSpeaker(document, speaker.id, event.target.value)) } catch { /* retain the last valid name */ } }}/></label>)}</section><section className="speaker-blocks" aria-label="Dialog per pembicara">{document.blocks.map((block, index) => <article key={block.id}><header><strong>{block.speakerLabel}</strong><span>{block.start.toFixed(1)}–{block.end.toFixed(1)} dtk</span></header><textarea aria-label={`Dialog ${block.speakerLabel}, blok ${index + 1}`} rows={Math.max(3, Math.ceil(block.text.length / 90))} value={block.text} onChange={event => editDocument({ ...document, blocks: document.blocks.map(item => item.id === block.id ? { ...item, text: event.target.value } : item) })}/></article>)}</section><footer><span>{document.blocks.length} giliran · {document.speakers.length} pembicara</span><button onClick={() => void normalize(row)} disabled={busyId === row.id}><Icon name="chip"/>Normalisasi bilingual</button><button className="task-save" onClick={() => void save(row)} disabled={busyId === row.id}><Icon name="check"/>{busyId === row.id ? 'Memproses…' : 'Simpan dialog'}</button></footer></div>}</td></tr>}
         </Fragment>)}</tbody></table></div> : <div className="tasks-state"><strong>Belum ada tugas.</strong><p>Jalankan transkripsi di ruang kerja. Tugas selesai akan muncul sebagai dialog per pembicara.</p><a href="#workspace">Buka ruang kerja</a></div>}
     </section>
   </main>

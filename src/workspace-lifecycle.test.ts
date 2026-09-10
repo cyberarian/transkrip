@@ -21,6 +21,8 @@ describe('workspace route lifecycle', () => {
   it('renders the retained workspace as a hidden surface instead of replacing it', () => {
     expect(rootSource).toContain('retainWorkspace(workspaceOpened, safeRoute)')
     expect(rootSource).toContain("hidden={safeRoute !== 'workspace'}")
-    expect(rootSource).toContain("<App routeActive={safeRoute === 'workspace'} diarizationMode={user.diarizationMode}/>")
+    expect(rootSource).toContain('hidden={sessionLocked} key={user.id}')
+    expect(rootSource).toContain('const unauthenticated = () => { setSessionLocked(true);')
+    expect(rootSource).toContain("<App ownerId={user.id} routeActive={!sessionLocked && safeRoute === 'workspace'} diarizationMode={user.diarizationMode}/>")
   })
 })

@@ -1,3 +1,4 @@
+import { parseWorkspaceCheckpoint, type WorkspaceCheckpoint } from '../src/workspace-checkpoint.ts'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -134,9 +135,39 @@ export class TranscriptionStore {
       ) STRICT;
     `)
     this.#migrate(bootstrapAdmin)
+    this.#database.exec(`CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+      owner_user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      operation_id TEXT NOT NULL,
+      checkpoint TEXT NOT NULL CHECK(length(checkpoint) <= 900000)
+    ) STRICT`)
     this.#initializeSearch()
     this.#database.exec('CREATE INDEX IF NOT EXISTS transcriptions_owner_created_at ON transcriptions(owner_user_id, created_at DESC, id DESC)')
     this.#get = this.#database.prepare('SELECT * FROM transcriptions WHERE id = ? AND owner_user_id = ?')
+  }
+
+  getWorkspace(ownerUserId: number): { revision: number; checkpoint: WorkspaceCheckpoint | null } {
+    const row = this.#database.prepare('SELECT revision, checkpoint FROM workspace_checkpoints WHERE owner_user_id = ?').get(ownerUserId) as { revision: number; checkpoint: string } | undefined
+    return row ? { revision: row.revision, checkpoint: parseWorkspaceCheckpoint(JSON.parse(row.checkpoint)) } : { revision: 0, checkpoint: null }
+  }
+
+  saveWorkspace(ownerUserId: number, revision: number, operationId: string, checkpoint: WorkspaceCheckpoint) {
+    const validated = parseWorkspaceCheckpoint(checkpoint)
+    this.#database.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.#database.prepare('SELECT revision, operation_id FROM workspace_checkpoints WHERE owner_user_id = ?').get(ownerUserId) as { revision: number; operation_id: string } | undefined
+      if (previous?.operation_id === operationId) { this.#database.exec('COMMIT'); return previous.revision }
+      if ((previous?.revision ?? 0) !== revision) { this.#database.exec('ROLLBACK'); return null }
+      if (validated.taskId !== null && !this.get(ownerUserId, validated.taskId)) throw new Error('Tugas checkpoint tidak ditemukan.')
+      this.#database.prepare(`INSERT INTO workspace_checkpoints VALUES (?, ?, ?, ?)
+        ON CONFLICT(owner_user_id) DO UPDATE SET revision = excluded.revision, operation_id = excluded.operation_id, checkpoint = excluded.checkpoint`).run(ownerUserId, revision + 1, operationId, JSON.stringify(validated))
+      if (validated.taskId !== null) {
+        const text = validated.segments.map(segment => segment.text).join('\n\n')
+        this.#database.prepare(`UPDATE transcriptions SET raw_text = ?, raw_transcript = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND owner_user_id = ? AND status = 'processing'`).run(text, text, validated.taskId, ownerUserId)
+      }
+      this.#database.exec('COMMIT')
+      return revision + 1
+    } catch (error) { this.#database.exec('ROLLBACK'); throw error }
   }
 
   #initializeSearch() {

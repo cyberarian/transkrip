@@ -135,7 +135,7 @@ function repairSingleJoinedWord(original: string, candidate: string) {
   return candidate
 }
 
-export async function correctTranscriptLocally(paragraphs: string[], onProgress: (done: number, total: number) => void, model = getCorrectionModel()) {
+export async function correctTranscriptLocally(paragraphs: string[], onProgress: (done: number, total: number) => void, model = getCorrectionModel(), onCheckpoint: (corrected: string[]) => Promise<void> = async () => undefined) {
   if (!isValidOllamaModelName(model)) throw new Error('Nama model koreksi tidak valid.')
   if (paragraphs.length > MAX_PARAGRAPHS || paragraphs.some(paragraph => paragraph.length > MAX_PARAGRAPH_CHARS)) {
     throw new Error('Transkrip terlalu besar untuk koreksi satu sesi. Bagi transkrip menjadi beberapa bagian.')
@@ -185,6 +185,7 @@ export async function correctTranscriptLocally(paragraphs: string[], onProgress:
     } catch {
       corrected.push(original); skipped += 1
     }
+    await onCheckpoint(corrected.slice())
     onProgress(index + 1, paragraphs.length)
   }
 

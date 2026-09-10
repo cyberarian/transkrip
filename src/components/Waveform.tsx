@@ -44,18 +44,14 @@ export function Waveform({ pcm, duration, current, onSeek }: Props) {
       } else {
         ctx.setLineDash([4, 5]); ctx.beginPath(); ctx.moveTo(0, middle); ctx.lineTo(w, middle); ctx.stroke(); ctx.setLineDash([])
       }
-      if (duration > 0) {
-        const x = (current / duration) * w
-        ctx.strokeStyle = '#b9d7f5'; ctx.lineWidth = 2
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke()
-      }
+
     }
     draw()
     const observer = new ResizeObserver(draw)
     const container = canvas.parentElement
     if (container) observer.observe(container)
     return () => observer.disconnect()
-  }, [pcm, duration, current])
+  }, [pcm])
 
   return <div className="waveform-wrap">
     <canvas
@@ -81,6 +77,7 @@ export function Waveform({ pcm, duration, current, onSeek }: Props) {
       const rect = event.currentTarget.getBoundingClientRect()
       if (duration > 0 && rect.width > 0) onSeek(((event.clientX - rect.left) / rect.width) * duration)
     }} />
+    {duration > 0 && <svg className="waveform-playhead" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><line x1={Math.max(0, Math.min(1000, current / duration * 1000))} x2={Math.max(0, Math.min(1000, current / duration * 1000))} y1="0" y2="100"/></svg>}
     <div className="timeline-labels"><span>00:00</span><span>{formatTime(duration / 2)}</span><span>{formatTime(duration)}</span></div>
   </div>
 }

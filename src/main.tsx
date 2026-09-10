@@ -9,6 +9,7 @@ import '@fontsource/chivo-mono/latin-700.css'
 import { Root } from './Root'
 import { applyAppearance, getAppearance } from './appearance'
 import './styles.css'
+import './studio.css'
 
 applyAppearance(getAppearance())
 

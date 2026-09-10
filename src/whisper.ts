@@ -6,6 +6,7 @@ type WorkerReply =
   | { type: 'segment'; segment: Segment }
   | { type: 'progress'; completed: number; total: number }
   | { type: 'done'; requestId: string }
+  | { type: 'checkpoint'; requestId: string; nextSample: number; completed: number; total: number }
   | { type: 'log'; message: string }
   | { type: 'error'; requestId?: string; message: string }
 
@@ -17,6 +18,7 @@ function isWorkerReply(value: unknown): value is WorkerReply {
   if (message.type === 'runtime-ready') return true
   if (message.type === 'model-ready' || message.type === 'done') return typeof message.requestId === 'string'
   if (message.type === 'log') return typeof message.message === 'string'
+  if (message.type === 'checkpoint') return typeof message.requestId === 'string' && Number.isSafeInteger(message.nextSample) && Number(message.nextSample) >= 0 && Number.isSafeInteger(message.completed) && Number.isSafeInteger(message.total)
   if (message.type === 'progress') return Number.isFinite(message.completed) && Number.isFinite(message.total)
   if (message.type === 'error') return typeof message.message === 'string' && (message.requestId === undefined || typeof message.requestId === 'string')
   if (message.type !== 'segment' || !message.segment || typeof message.segment !== 'object') return false
@@ -35,24 +37,36 @@ export class WhisperEngine {
   onSegment: (segment: Segment) => void = () => undefined
   onDone: () => void = () => undefined
   onProgress: (completed: number, total: number) => void = () => undefined
+  onCheckpoint: (nextSample: number) => Promise<void> = async () => undefined
   onLog: (line: string) => void = () => undefined
 
-  constructor() {
-    this.worker = new Worker('/whisper/engine-worker.js', { name: 'transkrip-whisper-engine' })
-    this.worker.addEventListener('message', event => {
+  constructor() { this.worker = this.createWorker() }
+
+  private createWorker() {
+    const worker = new Worker('/whisper/engine-worker.js', { name: 'transkrip-whisper-engine' })
+    worker.addEventListener('message', event => {
       if (!isWorkerReply(event.data)) {
         this.failAll('Worker whisper.cpp mengirim data yang tidak valid.')
         return
       }
       this.handleMessage(event.data)
     })
-    this.worker.addEventListener('error', () => this.failAll('Worker whisper.cpp berhenti. Muat ulang aplikasi untuk memulai ulang mesin transkripsi.'))
-    this.worker.addEventListener('messageerror', () => this.failAll('Data tidak dapat dikirim ke worker whisper.cpp. Muat ulang aplikasi lalu coba lagi.'))
+    worker.addEventListener('error', () => this.failAll('Worker whisper.cpp berhenti. Muat ulang aplikasi untuk memulai ulang mesin transkripsi.'))
+    worker.addEventListener('messageerror', () => this.failAll('Data tidak dapat dikirim ke worker whisper.cpp. Muat ulang aplikasi lalu coba lagi.'))
+    return worker
   }
 
   private handleMessage(message: WorkerReply) {
     if (message.type === 'segment') this.onSegment(message.segment)
     else if (message.type === 'progress') this.onProgress(message.completed, message.total)
+    else if (message.type === 'checkpoint') {
+      if (!this.pending.has(message.requestId)) return
+      void this.onCheckpoint(message.nextSample).then(() => {
+        if (!this.destroyed) this.worker.postMessage({ type: 'checkpoint-saved', requestId: message.requestId })
+      }, () => {
+        if (!this.destroyed) this.worker.postMessage({ type: 'checkpoint-failed', requestId: message.requestId })
+      })
+    }
     else if (message.type === 'log') this.onLog(message.message)
     else if (message.type === 'model-ready') this.finish(message.requestId)
     else if (message.type === 'done') { this.finish(message.requestId); this.onDone() }
@@ -94,12 +108,15 @@ export class WhisperEngine {
   }
 
   loadModel(buffer: ArrayBuffer) {
+    if (this.destroyed || this.pending.size) return Promise.reject(new Error('Mesin belum siap memuat model.'))
+    this.worker.terminate()
+    this.worker = this.createWorker()
     return this.request('load-model', { buffer }, [buffer])
   }
 
-  transcribe(audio: Float32Array, language: string, threads: number, chunkSeconds: number) {
+  transcribe(audio: Float32Array, language: string, threads: number, chunkSeconds: number, startSample = 0) {
     const workerAudio = audio.slice()
-    return this.request('transcribe', { buffer: workerAudio.buffer, language, threads, chunkSeconds }, [workerAudio.buffer])
+    return this.request('transcribe', { buffer: workerAudio.buffer, language, threads, chunkSeconds, startSample }, [workerAudio.buffer])
   }
 
   destroy() {

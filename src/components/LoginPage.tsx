@@ -16,14 +16,14 @@ export function LoginPage({ onAuthenticated, initialMessage }: { onAuthenticated
     finally { setBusy(false) }
   }
 
-  return <main className="login-shell" data-design-contract="Operate-mode local access checkpoint within the Cobalt Proof Sheet world.">
+  return <main className="login-shell" data-design-contract="Private transcription studio.">
     <section className="login-proof" aria-labelledby="login-title">
       <Brand href="#" label="Beranda Transkrip"/>
-      <div className="login-statement"><Icon name="shield"/><h1 id="login-title">Satu akun.<br/>Satu ruang kerja lokal.</h1><p>Setiap transkrip dipisahkan berdasarkan pemiliknya di SQLite. Kredensial dan sesi tetap berada pada layanan lokal perangkat ini.</p></div>
-      <dl><div><dt>Autentikasi</dt><dd>Cookie HttpOnly</dd></div><div><dt>Isolasi</dt><dd>Owner-scoped SQLite</dd></div><div><dt>Jaringan</dt><dd>Loopback lokal</dd></div></dl>
+      <div className="login-statement"><h1 id="login-title">Percakapan Anda.<br/><em>Lebih bermakna.</em></h1><p>Ubah rekaman menjadi transkrip yang siap dibaca, ditinjau, dan dianalisis dengan AI lokal. Semua tetap di perangkat Anda.</p><div className="login-sound" aria-hidden="true">{Array.from({ length:  48 }, (_, index) => <i key={index}/>)}</div><div className="login-caption"><Icon name="shield"/> Suara menjadi teks. Privasi tetap milik Anda.</div></div>
+      <dl><div><dt>Transkripsi</dt><dd>Di perangkat Anda</dd></div><div><dt>Bahasa</dt><dd>Indonesia + English</dd></div><div><dt>Analisis AI</dt><dd>Model lokal</dd></div></dl>
     </section>
     <form className="login-form" onSubmit={submit}>
-      <header><span>Akses ruang kerja</span><strong>Masuk</strong></header>
+      <header><strong>Selamat datang.</strong><p>Masuk untuk melanjutkan percakapan Anda.</p></header>
       <label><span>Username</span><input autoFocus autoComplete="username" value={username} minLength={3} maxLength={50} required onChange={event => setUsername(event.target.value)} /></label>
       <label><span>Password</span><input type="password" autoComplete="current-password" value={password} minLength={12} maxLength={128} required onChange={event => setPassword(event.target.value)} /></label>
       <p role="status" aria-live="polite">{message}</p>

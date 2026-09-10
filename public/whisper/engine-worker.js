@@ -16,6 +16,7 @@ let acceptAfter = 0
 let activeLanguage = 'auto'
 let activeRequestId
 let pendingChunk
+let pendingCheckpoint
 let segmentsEmitted = 0
 let resolveRuntime
 const runtimeReady = new Promise(resolve => { resolveRuntime = resolve })
@@ -90,6 +91,15 @@ importScripts('/whisper/main.js')
 self.addEventListener('message', async event => {
   const message = event.data
   if (!message || typeof message !== 'object' || typeof message.requestId !== 'string') return
+  if (message.type === 'checkpoint-saved' || message.type === 'checkpoint-failed') {
+    if (message.requestId === activeRequestId && pendingCheckpoint) {
+      const pending = pendingCheckpoint
+      pendingCheckpoint = undefined
+      if (message.type === 'checkpoint-saved') pending.resolve()
+      else pending.reject(new Error('Checkpoint belum tersimpan. Pulihkan layanan lokal, lalu lanjutkan dari progres terakhir.'))
+    }
+    return
+  }
   activeRequestId = message.requestId
   try {
     await runtimeReady
@@ -117,14 +127,21 @@ self.addEventListener('message', async event => {
       const overlapSamples = OVERLAP_SECONDS * SAMPLE_RATE
       const stepSamples = chunkSamples - overlapSamples
       const total = Math.max(1, Math.ceil(Math.max(0, audio.length - overlapSamples) / stepSamples))
-      segmentsEmitted = 0
+      const startSample = message.startSample ?? 0
+      if (!Number.isSafeInteger(startSample) || startSample < 0 || startSample > audio.length || (startSample !== audio.length && startSample % stepSamples !== 0)) throw new Error('Posisi checkpoint audio tidak valid.')
+      segmentsEmitted = startSample > 0 ? 1 : 0
 
-      for (let index = 0, start = 0; start < audio.length; index += 1, start += stepSamples) {
+      for (let index = Math.floor(startSample / stepSamples), start = startSample; start < audio.length; index += 1, start += stepSamples) {
         const end = Math.min(audio.length, start + chunkSamples)
         chunkOffset = start / SAMPLE_RATE
         acceptAfter = start === 0 ? 0 : OVERLAP_SECONDS
         send({ type: 'progress', completed: index, total })
         await runWhisperChunk(audio.subarray(start, end), message.language, threads, index, total)
+        await new Promise((resolve, reject) => {
+          pendingCheckpoint = { resolve, reject }
+          send({ type: 'checkpoint', requestId: message.requestId, nextSample: end === audio.length ? audio.length : start + stepSamples, completed: index + 1, total })
+        })
+        if (end === audio.length) break
       }
       if (segmentsEmitted === 0) throw new Error('Tidak ada ucapan yang dapat dikenali dalam audio ini.')
       send({ type: 'progress', completed: total, total })
