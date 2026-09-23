@@ -17,7 +17,7 @@ Built for meetings, interviews, lectures, consultations, and oral histories acro
 - Multithreaded whisper.cpp inference in a dedicated browser worker
 - Base multilingual, Small Q5_1 multilingual, and Cahya Medium Q5_0 Indonesian models
 - Browser audio decoding up to 250 MiB, or opt-in local FFmpeg preparation up to 2 GiB, with progress and cancellation
-- Waveform navigation, seeking, and timestamp evidence; both preparation modes retain a four-hour audio limit
+- Zoomable waveform with horizontal panning, seeking, and playback-follow; transcript segments retain timestamp evidence
 - Editable transcript paragraphs with search and language indicators in the live workspace
 - Clean TXT, timestamped SRT, and local DOCX transcript exports; DOCX also available from saved dialogue
 - Settings page for selecting an installed local Ollama model, typography preset, and per-account diarization policy
@@ -40,6 +40,12 @@ Built for meetings, interviews, lectures, consultations, and oral histories acro
 - No public registration, analytics, cloud transcription, cloud database, or remote error reporting
 
 ## Using Transkrip
+
+### Navigating long recordings
+
+Use the waveform above the audio controls to move through a recording. Select a point to seek there, or drag the waveform horizontally; trackpad and touch scrolling also pan the timeline. **Perbesar gelombang** and **Perkecil gelombang** zoom in and out while keeping the time under the viewport center steady. Choose **Tampilkan seluruh rekaman** to return to the full timeline. The time labels show the currently visible range.
+
+While audio is playing, the waveform follows the playhead as it nears the edge of the visible range. When playback is paused, panning and zooming leave the view where you put it. Keyboard users can focus **Posisi audio**, use the arrow keys to seek within the visible range, and press Home or End to jump to the start or finish.
 
 ### Preserving work through idle time and sleep
 

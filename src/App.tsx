@@ -468,7 +468,7 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
 
     <section className="audio-deck" aria-label="Audio player">
       <div className="deck-heading"><span className="file-name"><Icon name="folder"/>{audioName}</span><span>{formatTime(current, true)} / {formatTime(duration, true)}</span></div>
-      <Waveform hasPcm={hasPcm} readPcm={readPcm} duration={duration} current={current} onSeek={seek}/>
+      <Waveform hasPcm={hasPcm} readPcm={readPcm} duration={duration} current={current} playing={playing} onSeek={seek}/>
         <label className="media-preparation-mode"><input type="checkbox" checked={localPreparation} disabled={audioLoading || engine === 'transcribing' || !isLoopbackHostname(location.hostname)} onChange={event => setLocalPreparation(event.target.checked)}/><span>Siapkan dengan FFmpeg lokal<small>Berkas hingga 2 GB · salinan sementara di perangkat dihapus setelah persiapan. Memerlukan FFmpeg.</small></span></label>
       <div className="transport">
         <button className="seek-step" aria-label="Mundur 5 detik" onClick={() => seek(current - 5)}><Icon name="rewind"/></button>
