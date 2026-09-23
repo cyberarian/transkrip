@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { formatTime } from '../audio'
 
-type Props = { pcm: Float32Array | null; duration: number; current: number; onSeek: (time: number) => void }
+type Props = { hasPcm: boolean; readPcm: () => Float32Array | null; duration: number; current: number; onSeek: (time: number) => void }
 
-export function Waveform({ pcm, duration, current, onSeek }: Props) {
+export function Waveform({ hasPcm, readPcm, duration, current, onSeek }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -31,6 +31,7 @@ export function Waveform({ pcm, duration, current, onSeek }: Props) {
       ctx.fillStyle = '#5a9ee0'
       ctx.lineWidth = 1
       const middle = h / 2
+      const pcm = readPcm()
       if (pcm?.length) {
         const bars = Math.max(120, Math.floor(w / 3))
         const step = Math.max(1, Math.floor(pcm.length / bars))
@@ -51,7 +52,7 @@ export function Waveform({ pcm, duration, current, onSeek }: Props) {
     const container = canvas.parentElement
     if (container) observer.observe(container)
     return () => observer.disconnect()
-  }, [pcm])
+  }, [hasPcm, readPcm])
 
   return <div className="waveform-wrap">
     <canvas

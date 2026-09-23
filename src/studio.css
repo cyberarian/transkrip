@@ -288,7 +288,8 @@ h1, h2, h3 { text-wrap: balance; }
 /* Preparation has its own row; keep transport controls inside the audio deck. */
 .app-shell { grid-template-rows: auto auto minmax(420px, 1fr) auto; }
 .app-shell[data-recoverable] { grid-template-rows: auto auto auto minmax(420px, 1fr) auto; }
-.audio-deck { grid-template-rows: auto minmax(92px, 1fr) auto auto; min-height: 260px; }
+/* Bound the canvas row so its intrinsic aspect ratio cannot enlarge the deck. */
+.audio-deck { grid-template-rows: auto clamp(136px, 18vh, 200px) auto auto; min-height: 260px; }
 @media (max-width: 700px) {
   .audio-deck { grid-template-rows: auto 136px auto auto; }
 }

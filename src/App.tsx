@@ -1,4 +1,5 @@
 import { prepareLocalMedia } from './media-preparation'
+import { audioReadyMessage } from './transcription-readiness'
 import { isLoopbackHostname, MAX_LOCAL_MEDIA_BYTES } from './media-limits'
 import { useWorkspaceCheckpoint } from './use-workspace-checkpoint'
 import type { WorkspaceCheckpoint } from './workspace-checkpoint'
@@ -28,6 +29,7 @@ const demoSegments: Segment[] = [
 ]
 
 const MAX_BROWSER_MODEL_BYTES = 750 * 1024 * 1024
+const pcmBuffers = new WeakMap<object, Float32Array>()
 
 function friendlyModelError(error: unknown) {
   const detail = error instanceof Error ? error.message : String(error)
@@ -47,7 +49,9 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
   const [audioLoading, setAudioLoading] = useState(false)
   const [audioProgress, setAudioProgress] = useState<number | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [pcm, setPcm] = useState<Float32Array | null>(null)
+  const pcmKey = useRef<object>({})
+  const [hasPcm, setHasPcm] = useState(false)
+  const readPcm = useCallback(() => pcmBuffers.get(pcmKey.current) ?? null, [])
   const [duration, setDuration] = useState(0)
   const [current, setCurrent] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -286,10 +290,10 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
       audioRef.current?.pause()
       setPlaying(false); if (!keepRestored) setCurrent(0)
       setAudioUrl(URL.createObjectURL(file)); setAudioName(file.name)
-      setPcm(decoded.pcm); setDuration(decoded.duration)
+      pcmBuffers.set(pcmKey.current, decoded.pcm); setHasPcm(true); setDuration(decoded.duration)
       if (!keepRestored) { setSegments([]); setSelectedId(null); setResumeState(null) }
       setRestored(false)
-      setMessage('Audio siap. Tekan Transkripsikan untuk menjalankan whisper.cpp secara lokal.')
+      setMessage('Audio siap.')
     } catch (error) {
       setAudioProgress(null)
       const detail = error instanceof Error ? error.message : String(error)
@@ -325,12 +329,13 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
     setRestored(false)
     setPlaying(false); setTaskId(null); taskIdRef.current = null; persistenceRunRef.current = null
     setSegments([]); setSelectedId(null); setResumeState(null); setTaskDiarizationOverride(null)
-    setAudioHash(null); setAudioUrl(null); setPcm(null); setDuration(0); setCurrent(0)
+    setAudioHash(null); setAudioUrl(null); pcmBuffers.delete(pcmKey.current); setHasPcm(false); setDuration(0); setCurrent(0)
     setAudioName('Tidak ada audio'); setLanguage('auto')
     setMessage('Ruang kerja baru siap. Pilih audio untuk memulai transkripsi baru; teks sebelumnya tetap ada di halaman Tasks.')
   }
 
   const transcribe = async () => {
+    const pcm = readPcm()
     if (!pcm || engine !== 'ready' || checkingDiarization || audioLoading || !checkpointReady) return
     setCheckingDiarization(true)
     setMessage(taskDiarizationMode === 'off' ? 'Diarization dimatikan untuk tugas ini…' : 'Memeriksa kesiapan pyannote lokal sebelum memproses audio…')
@@ -456,14 +461,14 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
 
     <section className="checkpoint-bar" aria-label="Penyimpanan ruang kerja">
       <div><Icon name="shield"/><span role="status">{checkpointStatus}</span></div>
-      {(restored || resumeState) && <p>{resumeState ? `Progres tersimpan sampai ${formatTime(resumeState.nextSample / 16000)}. ` : ''}{!pcm ? 'Pilih rekaman asli untuk melanjutkan audio, atau buang ruang kerja ini untuk memakai rekaman lain. ' : ''}{engine !== 'ready' && engine !== 'transcribing' ? 'Muat model untuk melanjutkan transkripsi.' : ''}</p>}
+      {(restored || resumeState) && <p>{resumeState ? `Progres tersimpan sampai ${formatTime(resumeState.nextSample / 16000)}. ` : ''}{!hasPcm ? 'Pilih rekaman asli untuk melanjutkan audio, atau buang ruang kerja ini untuk memakai rekaman lain. ' : ''}{engine !== 'ready' && engine !== 'transcribing' ? 'Muat model untuk melanjutkan transkripsi.' : ''}</p>}
       {(restored || resumeState) && <button className="checkpoint-discard" onClick={discardRestoredWorkspace}>Ruang kerja baru</button>}
       <button className="checkpoint-save" onClick={planManualSave}>Simpan sekarang</button>
     </section>
 
     <section className="audio-deck" aria-label="Audio player">
       <div className="deck-heading"><span className="file-name"><Icon name="folder"/>{audioName}</span><span>{formatTime(current, true)} / {formatTime(duration, true)}</span></div>
-      <Waveform pcm={pcm} duration={duration} current={current} onSeek={seek}/>
+      <Waveform hasPcm={hasPcm} readPcm={readPcm} duration={duration} current={current} onSeek={seek}/>
         <label className="media-preparation-mode"><input type="checkbox" checked={localPreparation} disabled={audioLoading || engine === 'transcribing' || !isLoopbackHostname(location.hostname)} onChange={event => setLocalPreparation(event.target.checked)}/><span>Siapkan dengan FFmpeg lokal<small>Berkas hingga 2 GB · salinan sementara di perangkat dihapus setelah persiapan. Memerlukan FFmpeg.</small></span></label>
       <div className="transport">
         <button className="seek-step" aria-label="Mundur 5 detik" onClick={() => seek(current - 5)}><Icon name="rewind"/></button>
@@ -474,7 +479,8 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
         <label className="file-action"><Icon name="upload"/><span>Pilih audio</span><input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} aria-label="Pilih rekaman audio atau video" type="file" accept={localPreparation ? "audio/*,video/*,.mkv,.avi,.mov,.webm" : "audio/*,video/mp4"} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void loadAudio(file) }}/></label>
         {audioLoading && audioProgress !== null && <progress className="audio-progress" aria-label={`Membaca audio ${audioProgress}%`} value={audioProgress} max="100"/>}
         <label className="diarization-task-mode"><span>Pembicara</span><select aria-label="Mode diarization untuk transkripsi ini" value={taskDiarizationMode} disabled={engine === 'transcribing' || checkingDiarization} onChange={event => setTaskDiarizationOverride(event.target.value as DiarizationMode)}><option value="auto">Auto</option><option value="required">Required</option><option value="off">Off</option></select></label>
-        <button className="run-button" disabled={!checkpointReady || audioLoading || !pcm || engine !== 'ready' || checkingDiarization} onClick={transcribe}>{checkingDiarization ? 'Memeriksa…' : engine === 'transcribing' ? 'Sedang memproses…' : resumeState ? 'Lanjutkan transkripsi' : 'Transkripsikan'}</button>
+        {hasPcm && !audioLoading && (engine === 'missing' || engine === 'error') && <button type="button" onClick={() => setShowSetup(true)}>Siapkan model untuk transkripsi</button>}
+        <button className="run-button" disabled={!checkpointReady || audioLoading || !hasPcm || engine !== 'ready' || checkingDiarization} onClick={transcribe}>{checkingDiarization ? 'Memeriksa…' : engine === 'transcribing' ? 'Sedang memproses…' : resumeState ? 'Lanjutkan transkripsi' : 'Transkripsikan'}</button>
       </div>
     </section>
 
@@ -501,7 +507,7 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
       </aside>
     </section>
 
-    <footer className="status-strip" role="status"><span className={`status-dot state-${engine}`}/><span>{message}</span><span className="memory-note">{engine === 'transcribing' || runtimeProfile !== 'Belum diukur' ? runtimeProfile : crossOriginIsolated ? 'WASM threads aktif' : 'WASM threads perlu COOP/COEP'}</span></footer>
+    <footer className="status-strip" role="status"><span className={`status-dot state-${engine}`}/><span>{message === 'Audio siap.' ? audioReadyMessage(engine, Boolean(resumeState)) : message}</span><span className="memory-note">{engine === 'transcribing' || runtimeProfile !== 'Belum diukur' ? runtimeProfile : crossOriginIsolated ? 'WASM threads aktif' : 'WASM threads perlu COOP/COEP'}</span></footer>
     {audioUrl && <audio ref={audioRef} src={audioUrl}/>} 
 
     {showSetup && <dialog ref={setupRef} className="setup-drawer" aria-labelledby="setup-title" onClose={() => setShowSetup(false)}>
