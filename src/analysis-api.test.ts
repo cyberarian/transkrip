@@ -25,3 +25,11 @@ describe('analysis API', () => {
     await expect(checkDocetl(fetcher)).resolves.toMatchObject({ status: 'ready', version: '0.3.0' })
   })
 })
+
+// Source excerpts can make a valid result exceed the previous 500k response cap.
+it('reads large evidence-bearing results without dropping source snapshots', async () => {
+  const evidence = Array.from({ length: 64 }, (_, i) => ({ ref: `T2P${i + 1}`, transcriptionId: 2, source: 'rapat.wav', blockId: null, start: null, end: null, quote: 'a'.repeat(2000), sourceUpdatedAt: '2026-09-14' }))
+  const result = { summary: 'a'.repeat(100000), primary: 'b'.repeat(100000), secondary: 'c'.repeat(100000), tertiary: 'd'.repeat(100000), evidence }
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ data: { ...run, status: 'completed', progressPhase: 'completed', result } }))) as unknown as typeof fetch
+  expect((await getAnalysis(7, fetcher)).result?.evidence).toHaveLength(64)
+})

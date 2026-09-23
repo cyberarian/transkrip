@@ -270,9 +270,25 @@ h1, h2, h3 { text-wrap: balance; }
 .checkpoint-bar svg { width: 17px; color: var(--cobalt); }
 .checkpoint-bar p { margin: 0; color: var(--muted); flex: 1; }
 .checkpoint-bar button { min-height: 36px; margin-left: auto; padding: 6px 12px; border: 1px solid var(--line); background: var(--ink-00); color: var(--paper-ink); cursor: pointer; }
+.checkpoint-bar button:hover { background: var(--ink-02); }
+.checkpoint-bar .checkpoint-save { color: #ffffff; background: var(--cobalt); border-color: var(--cobalt); }
+.checkpoint-bar .checkpoint-save:hover { background: var(--cobalt-deep); }
+.checkpoint-bar .checkpoint-discard { margin-left: 0; }
+.checkpoint-bar .checkpoint-discard + .checkpoint-save { margin-left: auto; }
 @media (max-width: 600px) {
   .app-shell[data-recoverable] { grid-template-rows: auto auto auto minmax(420px, 1fr) auto; }
   .checkpoint-bar p { flex-basis: 100%; }
 }
+.audio-progress { height: 10px; border-radius: 5px; border-color: var(--line); }
+.audio-progress::-webkit-progress-value { background: var(--cobalt); }
+.audio-progress::-moz-progress-bar { background: var(--cobalt); }
 .waveform-playhead { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .waveform-playhead line { stroke: #b9d7f5; stroke-width: 2; vector-effect: non-scaling-stroke; }
+
+/* Preparation has its own row; keep transport controls inside the audio deck. */
+.app-shell { grid-template-rows: auto auto minmax(420px, 1fr) auto; }
+.app-shell[data-recoverable] { grid-template-rows: auto auto auto minmax(420px, 1fr) auto; }
+.audio-deck { grid-template-rows: auto minmax(92px, 1fr) auto auto; min-height: 260px; }
+@media (max-width: 700px) {
+  .audio-deck { grid-template-rows: auto 136px auto auto; }
+}

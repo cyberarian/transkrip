@@ -6,6 +6,7 @@ import { Icon } from '../icons'
 import { listLocalOllamaModels, type LocalOllamaModel } from '../ollama-models'
 import { listTranscriptions, type TranscriptionSummary } from '../transcriptions-api'
 import { Brand } from './Brand'
+import { AnalysisResultView } from './AnalysisResultView'
 
 const statusLabels = { pending: 'Menunggu', running: 'Berjalan', completed: 'Selesai', error: 'Gagal' }
 const dateTime = new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium', timeStyle: 'short' })
@@ -24,7 +25,7 @@ function download(run: AnalysisRun, format: 'txt' | 'markdown' | 'json') {
   const sections = preset.sections.map((title, index) => ({ title, content: [run.result!.primary, run.result!.secondary, run.result!.tertiary][index] || 'Tidak ditemukan.' }))
   const content = format === 'json'
     ? JSON.stringify({ preset: run.preset, model: run.model, sources: run.sourceNames, result: run.result }, null, 2)
-    : [`${preset.title}`, '', `Sumber: ${run.sourceNames.join(', ')}`, `Model: ${run.model}`, '', 'Ringkasan', run.result.summary, ...sections.flatMap(section => ['', section.title, section.content])].map(line => format === 'markdown' && ['Ringkasan', ...preset.sections].includes(line) ? `## ${line}` : line).join('\n')
+    : [`${preset.title}`, '', `Sumber: ${run.sourceNames.join(', ')}`, `Model: ${run.model}`, '', 'Ringkasan', run.result.summary, ...sections.flatMap(section => ['', section.title, section.content]), ...(run.result.evidence?.length ? ['', 'Petikan sumber', ...run.result.evidence.flatMap(item => [`[[${item.ref}]] ${item.source} · ${item.start === null ? 'waktu tidak tersedia' : `${item.start}–${item.end} dtk`}`, item.quote, `Versi sumber: ${item.sourceUpdatedAt}`, ''])] : [])].map(line => format === 'markdown' && ['Ringkasan', ...preset.sections].includes(line) ? `## ${line}` : line).join('\n')
   const url = URL.createObjectURL(new Blob([content], { type: format === 'json' ? 'application/json' : 'text/plain;charset=utf-8' }))
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = `analysis-${run.id}.${format === 'markdown' ? 'md' : format}`; anchor.click(); URL.revokeObjectURL(url)
 }
@@ -109,11 +110,18 @@ export function AnalysisPage() {
     finally { setBusy(false) }
   }
 
+  const exportWord = async (runValue: AnalysisRun) => {
+    try {
+      const { analysisDocx, saveDocx } = await import('../docx-export')
+      saveDocx(await analysisDocx(runValue), `analysis-${runValue.id}.docx`)
+    } catch { setMessage('Dokumen Word gagal dibuat. Coba lagi atau gunakan ekspor TXT.') }
+  }
+
   const healthCopy = health.status === 'ready' ? `DocETL ${health.version} siap` : health.status === 'checking' ? 'Memeriksa DocETL…' : health.reason === 'dependency_missing' ? 'Paket DocETL belum terpasang' : 'Worker DocETL belum terhubung'
 
   return <main className="analysis-shell">
     <header className="about-command-bar analysis-command-bar"><Brand href="#workspace" className="about-brand" label="Workspace Transkrip"/><div className="privacy-state"><Icon name="shield"/><span><b>DocETL + Ollama lokal</b><small>Tanpa penyedia model cloud</small></span></div><div className="about-location"><span>Menu</span><strong>Analysis</strong></div><a className="about-back" href="#workspace"><Icon name="back"/>Workspace</a></header>
-    <section className="analysis-intro"><div><h1>Analisis percakapan lokal</h1><p>Pilih transkrip yang sudah selesai, lalu jalankan pipeline terarah untuk merangkum keputusan, tindakan, dan tema tanpa memberi DocETL akses langsung ke SQLite.</p></div><aside className={`analysis-health is-${health.status}`}><Icon name="analysis"/><strong>{healthCopy}</strong><p>{health.status === 'ready' ? 'Pekerjaan berjalan satu per satu agar sesuai dengan perangkat 16 GB.' : 'Fitur transkripsi tetap berfungsi meskipun layanan analisis opsional belum siap.'}</p><button type="button" onClick={() => void checkDocetl().then(setHealth)} disabled={health.status === 'checking'}>Check again</button></aside></section>
+    <section className="analysis-intro"><div><h1>Analisis percakapan lokal</h1><p>Pilih transkrip yang sudah selesai, lalu jalankan pipeline terarah untuk merangkum keputusan, tindakan, dan tema tanpa memberi DocETL akses langsung ke SQLite.</p></div><aside className={`analysis-health is-${health.status}`}><Icon name="analysis"/><strong>{healthCopy}</strong><p>{health.status === 'ready' ? 'Analisis diproses satu per satu untuk menjaga kinerja aplikasi tetap stabil.' : 'Fitur transkripsi tetap berfungsi meskipun layanan analisis opsional belum siap.'}</p><button type="button" onClick={() => void checkDocetl().then(setHealth)} disabled={health.status === 'checking'}>Check again</button></aside></section>
     <section className="analysis-builder" aria-labelledby="analysis-builder-title">
       <header><div><h2 id="analysis-builder-title">Siapkan pipeline</h2><p role="status" aria-live="polite">{message}</p></div><span>{selected.length}/8 dipilih</span></header>
       <div className="analysis-builder-grid">
@@ -129,8 +137,8 @@ export function AnalysisPage() {
         const activity = isActive ? analysisActivity(runValue, clock) : null
         return <article key={runValue.id} className={`analysis-run is-${runValue.status}`}>
           <header><span><b>#{String(runValue.id).padStart(4, '0')}</b><small>{dateTime.format(new Date(runValue.createdAt))}</small></span><div><h3>{definition.title}</h3><p>{runValue.sourceNames.join(' · ')}</p></div><strong>{statusLabels[runValue.status]}{activity && <small>{activity.elapsed}</small>}</strong></header>
-          {runValue.result ? <div className="analysis-result"><section><h4>Ringkasan</h4><p>{runValue.result.summary}</p></section>{definition.sections.map((title, index) => <section key={title}><h4>{title}</h4><p>{[runValue.result!.primary, runValue.result!.secondary, runValue.result!.tertiary][index] || 'Tidak ditemukan dalam transkrip.'}</p></section>)}</div> : isActive ? <AnalysisLiveActivity run={runValue} now={clock}/> : <p className="analysis-run-state">{runValue.errorMessage || 'Analisis tidak menghasilkan keluaran.'}</p>}
-          <footer><span>{runValue.model}</span>{runValue.result && <><button onClick={() => download(runValue, 'txt')}><Icon name="download"/>TXT</button><button onClick={() => download(runValue, 'markdown')}><Icon name="download"/>Markdown</button><button onClick={() => download(runValue, 'json')}><Icon name="download"/>JSON</button></>}<button className={deleteConfirm === runValue.id ? 'confirm-delete' : ''} onClick={() => void remove(runValue)} disabled={busy || runValue.status === 'running'}><Icon name="trash"/>{deleteConfirm === runValue.id ? 'Konfirmasi' : 'Hapus'}</button></footer>
+          {runValue.result ? <AnalysisResultView run={runValue}/> : isActive ? <AnalysisLiveActivity run={runValue} now={clock}/> : <p className="analysis-run-state">{runValue.errorMessage || 'Analisis tidak menghasilkan keluaran.'}</p>}
+          <footer><span>{runValue.model}</span>{runValue.result && <><button onClick={() => void exportWord(runValue)}><Icon name="download"/>DOCX</button><button onClick={() => download(runValue, 'txt')}><Icon name="download"/>TXT</button><button onClick={() => download(runValue, 'markdown')}><Icon name="download"/>Markdown</button><button onClick={() => download(runValue, 'json')}><Icon name="download"/>JSON</button></>}<button className={deleteConfirm === runValue.id ? 'confirm-delete' : ''} onClick={() => void remove(runValue)} disabled={busy || runValue.status === 'running'}><Icon name="trash"/>{deleteConfirm === runValue.id ? 'Konfirmasi' : 'Hapus'}</button></footer>
         </article>
       })}</div> : <div className="analysis-empty"><strong>Belum ada hasil analisis.</strong><p>Pilih satu hingga delapan transkrip, tentukan pipeline, lalu jalankan pekerjaan lokal pertama.</p></div>}
     </section>

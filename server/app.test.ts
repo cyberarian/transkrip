@@ -248,3 +248,37 @@ test('workspace checkpoints require the current owner and reject stale, foreign,
     assert.equal((await invoke(handler, 'PUT', '/api/workspace', { ...write, checkpoint: { ...checkpoint, taskId: task.id } }, tenant.cookie)).status, 404)
   } finally { store.close() }
 })
+
+test('media preparation requires authentication, same origin, local access, and current owner', async () => {
+  const { store, handler } = await fixture()
+  try {
+    assert.equal((await invoke(handler, 'POST', '/api/media/prepare')).status, 401)
+    const admin = await login(handler, 'bootstrap.admin', 'bootstrap password value')
+    assert.equal((await invoke(handler, 'POST', '/api/media/prepare', {}, admin.cookie, { origin: 'https://foreign.example' })).status, 403)
+    assert.equal((await invoke(handler, 'POST', '/api/media/prepare', {}, admin.cookie, { host: 'public.example' })).status, 403)
+    assert.equal((await invoke(handler, 'POST', '/api/media/prepare', {}, admin.cookie, { 'x-workspace-owner': '99' })).status, 409)
+    assert.equal((await invoke(handler, 'POST', '/api/media/prepare', {}, admin.cookie)).status, 415)
+  } finally { store.close() }
+})
+
+test('analysis persists only references resolved from the authorized source snapshot', async () => {
+  const ready: DocetlHealthSnapshot = { status: 'ready', checkedAt: null, latencyMs: 1, version: '0.3.0', reason: null }
+  const docetl: DocetlService = { snapshot: () => ready, check: async () => ready, analyze: async input => {
+    assert.match(input.documents[0].text, /\[\[T\d+P1\]\]/)
+    return { summary: `Kirim Jumat. [[T${input.documents[0].id}P1]]`, primary: '', secondary: '', tertiary: '' }
+  } }
+  const { store, handler } = await fixture(undefined, undefined, docetl)
+  try {
+    const admin = await login(handler, 'bootstrap.admin', 'bootstrap password value')
+    const task = store.create(1, 'source.wav', 'id')
+    store.appendSegment(1, task.id, 'Kirim Jumat.')
+    store.finalize(1, task.id, { speakers: [{ id: 'p1', label: 'Budi' }], blocks: [{ id: 's1', speakerId: 'p1', speakerLabel: 'Budi', start: 2, end: 5, text: 'Kirim Jumat.' }] }, 'fallback')
+    const response = await invoke(handler, 'POST', '/api/analyses', { preset: 'meeting_minutes', model: 'local:q4', transcriptionIds: [task.id] }, admin.cookie)
+    assert.equal(response.status, 202)
+    await new Promise(resolve => setImmediate(resolve))
+    const run = store.getAnalysis(1, (response.body.data as { id: number }).id)!
+    assert.equal(run.status, 'completed')
+    assert.equal(run.result?.evidence?.[0].start, 2)
+    assert.equal(run.result?.evidence?.[0].quote, 'Kirim Jumat.')
+  } finally { store.close() }
+})

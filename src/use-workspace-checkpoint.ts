@@ -3,6 +3,8 @@ import { CheckpointWriter, parseWorkspaceCheckpoint, type CheckpointOperation, t
 
 export function useWorkspaceCheckpoint(ownerId: number, checkpoint: WorkspaceCheckpoint, restore: (value: WorkspaceCheckpoint) => void) {
   const writer = useRef<CheckpointWriter | null>(null)
+  const everReady = useRef(false)
+  const latestCheckpoint = useRef(checkpoint)
   const [ready, setReady] = useState(false)
   const [status, setStatus] = useState('Membaca checkpoint lokal…')
   const [retry, setRetry] = useState(0)
@@ -21,9 +23,12 @@ export function useWorkspaceCheckpoint(ownerId: number, checkpoint: WorkspaceChe
     }
   }, [])
 
+  useLayoutEffect(() => { latestCheckpoint.current = checkpoint }, [checkpoint])
+
   useEffect(() => {
     let active = true
     mounted.current = true
+    const rearm = everReady.current
     const controller = new AbortController()
     const headers = { 'Content-Type': 'application/json', 'X-Workspace-Owner': String(ownerId) }
     const read = async (response: Response) => {
@@ -42,13 +47,26 @@ export function useWorkspaceCheckpoint(ownerId: number, checkpoint: WorkspaceChe
     }
     fetch('/api/workspace', { headers, signal: controller.signal }).then(read).then(data => {
       if (!active) return
-      if (data.checkpoint) restore(parseWorkspaceCheckpoint(data.checkpoint))
+      // A manual re-arm after a conflict must not clobber unsaved local state with the server copy.
+      if (!rearm && data.checkpoint) restore(parseWorkspaceCheckpoint(data.checkpoint))
       writer.current = new CheckpointWriter(data.revision, save)
+      everReady.current = true
       blocked.current = false
-      setReady(true); setStatus(data.checkpoint ? 'Ruang kerja dipulihkan dari perangkat' : 'Penyimpanan lokal siap')
-    }).catch(error => { if (active) setStatus(error instanceof Error ? error.message : 'Checkpoint tidak dapat dibaca.') })
+      if (rearm) {
+        writer.current.stage(latestCheckpoint.current)
+        setStatus('Penyimpanan lokal tersambung kembali')
+        void flush().catch(() => undefined)
+      } else {
+        setStatus(data.checkpoint ? 'Ruang kerja dipulihkan dari perangkat' : 'Penyimpanan lokal siap')
+      }
+      setReady(true)
+    }).catch(error => {
+      if (!active) return
+      setReady(false)
+      setStatus(error instanceof Error ? error.message : 'Checkpoint tidak dapat dibaca.')
+    })
     return () => { active = false; mounted.current = false; writer.current?.dispose(); writer.current = null; controller.abort() }
-  }, [ownerId, restore, retry])
+  }, [ownerId, restore, retry, flush])
 
   useLayoutEffect(() => {
     if (!ready || !writer.current) return
@@ -87,5 +105,10 @@ export function useWorkspaceCheckpoint(ownerId: number, checkpoint: WorkspaceChe
     writer.current.stage(value)
     await flush()
   }, [flush])
-  return { ready, status, saveNow, retrySave: () => ready ? void flush().catch(() => undefined) : setRetry(value => value + 1) }
+  // Manual save: retry the pending operation, or re-read the revision after a conflict, instead of dead-ending.
+  const planManualSave = useCallback(() => {
+    if (!ready || blocked.current) { setRetry(value => value + 1); return }
+    void flush().catch(() => undefined)
+  }, [ready, flush])
+  return { ready, status, saveNow, planManualSave }
 }

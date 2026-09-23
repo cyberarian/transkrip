@@ -1,3 +1,4 @@
+import { readResponseTextWithinLimit } from './correction'
 import { analysisRunFromUnknown, isAnalysisPreset, type AnalysisPreset } from './analysis'
 import { isValidOllamaModelName } from './correction-model'
 
@@ -12,9 +13,8 @@ export type DocetlRuntimeStatus = {
 type Fetcher = typeof fetch
 const JSON_HEADERS = { 'Content-Type': 'application/json', Accept: 'application/json' }
 
-async function read(response: Response) {
-  const text = await response.text()
-  if (text.length > 500_000) throw new Error('Respons analisis melebihi batas aman.')
+async function read(response: Response, maxChars = 4_000_000) {
+  const text = await readResponseTextWithinLimit(response, maxChars)
   let body: unknown
   try { body = JSON.parse(text) } catch { throw new Error('Layanan analisis mengirim respons yang tidak valid.') }
   if (!response.ok) {
@@ -26,7 +26,7 @@ async function read(response: Response) {
 }
 
 export async function listAnalyses(fetcher: Fetcher = fetch) {
-  const body = await read(await fetcher('/api/analyses?limit=50&offset=0', { headers: { Accept: 'application/json' } }))
+  const body = await read(await fetcher('/api/analyses?limit=50&offset=0', { headers: { Accept: 'application/json' } }), 32_000_000)
   if (!Array.isArray(body.data) || !body.pagination || !Number.isSafeInteger(body.pagination.total)) throw new Error('Daftar analisis tidak valid.')
   return { data: body.data.map(analysisRunFromUnknown), pagination: { total: body.pagination.total as number } }
 }

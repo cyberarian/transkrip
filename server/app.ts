@@ -1,3 +1,7 @@
+import { createReadStream } from 'node:fs'
+import { pipeline } from 'node:stream/promises'
+import { MediaPreparation, MediaPreparationError } from './media-preparation.ts'
+import { isLoopbackHostname } from '../src/media-limits.ts'
 import { parseWorkspaceCheckpoint } from '../src/workspace-checkpoint.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { correctTextWithOllama } from './correction.ts'
@@ -14,7 +18,8 @@ import { DiarizationHealthMonitor, type DiarizationHealthService } from './diari
 import { isDiarizationMode } from '../src/diarization-mode.ts'
 import { isAnalysisPreset, type AnalysisPreset } from '../src/analysis.ts'
 import { isValidOllamaModelName } from '../src/correction-model.ts'
-import { DocetlClient, type AnalysisDocument, type DocetlService } from './docetl-client.ts'
+import { buildAnalysisDocument, groundAnalysisResult, type EvidenceDocument } from './analysis-evidence.ts'
+import { DocetlClient, type DocetlService } from './docetl-client.ts'
 
 const MAX_BODY_BYTES = 1_050_000
 const MAX_SOURCE_CHARS = 512
@@ -127,13 +132,13 @@ class LoginThrottle {
   clear(key: string) { this.#attempts.delete(key) }
 }
 
-export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetch = fetch, staging = new AudioStaging(join(tmpdir(), 'transkrip-audio')), ollama: OllamaHealthService = new OllamaHealthMonitor(fetcher), diarizationHealth: DiarizationHealthService = new DiarizationHealthMonitor(fetcher), docetl: DocetlService = new DocetlClient(fetcher)) {
+export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetch = fetch, staging = new AudioStaging(join(tmpdir(), 'transkrip-audio')), ollama: OllamaHealthService = new OllamaHealthMonitor(fetcher), diarizationHealth: DiarizationHealthService = new DiarizationHealthMonitor(fetcher), docetl: DocetlService = new DocetlClient(fetcher), media = new MediaPreparation(join(tmpdir(), 'transkrip-media'))) {
   const throttle = new LoginThrottle()
   let analysisTail = Promise.resolve()
-  const enqueueAnalysis = (ownerUserId: number, id: number, preset: AnalysisPreset, model: string, documents: AnalysisDocument[]) => {
+  const enqueueAnalysis = (ownerUserId: number, id: number, preset: AnalysisPreset, model: string, documents: EvidenceDocument[]) => {
     analysisTail = analysisTail.catch(() => undefined).then(async () => {
       if (!store.startAnalysis(ownerUserId, id)) return
-      try { store.completeAnalysis(ownerUserId, id, await docetl.analyze({ preset, model, documents }, phase => { store.setAnalysisProgress(ownerUserId, id, phase) })) }
+      try { store.completeAnalysis(ownerUserId, id, groundAnalysisResult(await docetl.analyze({ preset, model, documents: documents.map(({ id, source, text }) => ({ id, source, text })) }, phase => { store.setAnalysisProgress(ownerUserId, id, phase) }), documents)) }
       catch { store.failAnalysis(ownerUserId, id, 'DocETL atau Ollama lokal tidak dapat menyelesaikan analisis. Periksa layanan lokal, lalu jalankan analisis baru.') }
     })
   }
@@ -173,6 +178,28 @@ export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetc
       if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) assertSameOrigin(request)
 
       if (request.headers['x-workspace-owner'] && request.headers['x-workspace-owner'] !== String(user.id)) throw new HttpError(409, 'Akun aktif berubah. Muat ulang ruang kerja.', 'WORKSPACE_OWNER_CHANGED')
+      if (method === 'POST' && url.pathname === '/api/media/prepare') {
+        const hostname = new URL(`http://${request.headers.host || 'invalid'}`).hostname
+        if (!isLoopbackHostname(hostname) || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '')) throw new HttpError(403, 'Persiapan media hanya tersedia pada perangkat lokal.')
+        if (request.headers['content-type'] !== 'application/octet-stream') throw new HttpError(415, 'Gunakan berkas media biner.')
+        const controller = new AbortController()
+        const cancel = () => { if (!response.writableFinished) controller.abort() }
+        response.once('close', cancel)
+        try {
+          const prepared = await media.prepare(request, Number(request.headers['content-length']), controller.signal)
+          try {
+            status = 200
+            response.writeHead(status, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(prepared.bytes),
+              'X-Audio-Sha256': prepared.hash, 'X-Audio-Duration': String(prepared.duration), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+            await pipeline(createReadStream(prepared.path), response, { signal: controller.signal })
+          } finally { await prepared.dispose() }
+        } catch (error) {
+          if (response.destroyed || response.headersSent) return
+          throw new HttpError(error instanceof MediaPreparationError ? error.status : 500,
+            error instanceof MediaPreparationError ? error.message : 'Persiapan media lokal gagal atau melewati batas waktu. Coba lagi atau gunakan mode browser.')
+        } finally { response.off('close', cancel) }
+        return
+      }
       if (url.pathname === '/api/workspace') {
         if (method === 'GET') { status = 200; send(response, status, { data: store.getWorkspace(user.id) }); return }
         if (method === 'PUT') {
@@ -290,7 +317,7 @@ export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetc
           if (!isAnalysisPreset(body.preset)) throw new HttpError(400, 'Jenis analisis tidak valid.', 'INVALID_ANALYSIS_PRESET')
           if (!isValidOllamaModelName(body.model)) throw new HttpError(400, 'Nama model Ollama tidak valid.', 'INVALID_MODEL')
           const ids = transcriptionIdsField(body.transcriptionIds)
-          const documents: AnalysisDocument[] = []
+          const documents: EvidenceDocument[] = []
           let totalChars = 0
           for (const sourceId of ids) {
             const record = store.get(user.id, sourceId)
@@ -300,8 +327,9 @@ export function createApiHandler(store: TranscriptionStore, fetcher: typeof fetc
             if (!text) throw new HttpError(409, 'Transkripsi tidak memiliki teks yang dapat dianalisis.', 'TRANSCRIPTION_EMPTY')
             totalChars += text.length
             if (totalChars > 500_000) throw new HttpError(413, 'Gabungan transkrip melebihi batas analisis lokal 500.000 karakter.', 'ANALYSIS_INPUT_TOO_LARGE')
-            documents.push({ id: record.id, source: record.audioFile, text })
+            documents.push(buildAnalysisDocument(record))
           }
+          if (Buffer.byteLength(JSON.stringify(documents.map(({ id, source, text }) => ({ id, source, text })))) > 590_000) throw new HttpError(413, 'Gabungan transkrip dan referensi melebihi batas analisis lokal.', 'ANALYSIS_INPUT_TOO_LARGE')
           const readiness = await docetl.check()
           if (readiness.status !== 'ready') throw new HttpError(503, readiness.reason === 'dependency_missing' ? 'DocETL belum terpasang pada lingkungan Python lokal.' : 'Layanan DocETL lokal belum siap.', 'DOCETL_UNAVAILABLE')
           if (store.countActiveAnalyses(user.id) >= 2 || store.countActiveAnalyses() >= 8) throw new HttpError(429, 'Antrean analisis lokal sedang penuh. Tunggu pekerjaan aktif selesai, lalu coba lagi.', 'ANALYSIS_QUEUE_FULL')

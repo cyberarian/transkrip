@@ -138,3 +138,16 @@ Audit and harden the local-first transcription application without adding teleme
 ## Open Questions
 
 - The final production host/runtime is not specified. The repository will document required headers and proxy behavior, but host-specific deployment automation remains a release-owner decision.
+
+## Current increment: reviewed-record workflow (2026-09-14)
+
+User authorized the recommended next release: more reliable media preparation, evidence-linked analysis, and DOCX export. Apply the shared workflow across the domains in PRODUCT.md.
+
+1. Evidence: create immutable passage snapshots from owner-authorized transcripts; give each a generated reference; preserve model citations; validate references against the input snapshot; render links to the exact text/timestamp. Old results remain readable and explicitly lack references. Source membership is validated, but semantic entailment remains a user review task.
+2. Documents: lazily load a maintained DOCX writer; export workspace transcripts, saved speaker documents, and analysis with evidence. Preserve bilingual text, paragraphs, and timestamps; do not change source records during export.
+3. Preparation: add an explicitly selected loopback FFmpeg mode for files up to 2 GB, with streamed input hashing, temporary files, bounded output/time/concurrency, and cancellation. Browser decoding remains default. Recognition stays in the browser. No media URLs, supplied filesystem paths, or network-enabled FFmpeg input protocols.
+4. Verification: focused TS/Node/Python tests, real FFmpeg audio/video fixtures and cancellation, browser desktop/mobile/download checks, then repository check gate.
+
+Later increments retain the broader suggested roadmap: persistent batch transcription metadata and file reselection recovery; review/revision history; projects/metadata; glossary; templates; redacted copies; backup/restore; easier installation. This increment does not claim those are shipped.
+
+Documentation must distinguish the existing 250 MB browser limit from the optional 2 GB local preparation input limit. Both modes retain a four-hour decoded-audio limit and device-memory constraints. Temporary conversion changes the prior browser-only decoding boundary and must be visible before import.

@@ -2,6 +2,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { MediaPreparation } from './media-preparation.ts'
 import { createApiHandler } from './app.ts'
 import { TranscriptionStore } from './database.ts'
 import { AudioStaging } from './diarization.ts'
@@ -32,7 +33,7 @@ const store = new TranscriptionStore(dataPath, bootstrapAdmin)
 const ollama = new OllamaHealthMonitor(fetch)
 const diarizationHealth = new DiarizationHealthMonitor(fetch)
 const docetl = new DocetlClient(fetch)
-const api = createApiHandler(store, fetch, new AudioStaging(join(projectRoot, 'data', 'audio-staging')), ollama, diarizationHealth, docetl)
+const api = createApiHandler(store, fetch, new AudioStaging(join(projectRoot, 'data', 'audio-staging')), ollama, diarizationHealth, docetl, new MediaPreparation(join(projectRoot, 'data', 'media-staging')))
 const mime = new Map([['.html', 'text/html; charset=utf-8'], ['.js', 'text/javascript; charset=utf-8'], ['.css', 'text/css; charset=utf-8'], ['.json', 'application/json'], ['.bin', 'application/octet-stream'], ['.wasm', 'application/wasm'], ['.woff2', 'font/woff2'], ['.svg', 'image/svg+xml']])
 const securityHeaders = {
   'Cross-Origin-Embedder-Policy': 'require-corp',

@@ -81,3 +81,13 @@
 - [ ] Readiness verdict, residual risks, smoke test, and rollback steps are recorded.
 
 **Verification:** documentation review and final `npm run check`
+
+## Reviewed-record release — 2026-09-14
+
+- [x] Evidence snapshots, citation validation, and backward-compatible result contract.
+- [x] DocETL passage-reference prompts and clickable evidence review.
+- [x] DOCX exports for workspace, saved dialogue, and analysis.
+- [x] Optional bounded loopback conversion with input hashing and temporary-file cleanup.
+- [x] Preparation progress/cancellation and updated file-picker limits.
+- [x] Focused tests, real media fixtures, browser verification, and full checks.
+- [x] Documentation and explicit later-release backlog.

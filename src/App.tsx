@@ -1,7 +1,9 @@
+import { prepareLocalMedia } from './media-preparation'
+import { isLoopbackHostname, MAX_LOCAL_MEDIA_BYTES } from './media-limits'
 import { useWorkspaceCheckpoint } from './use-workspace-checkpoint'
 import type { WorkspaceCheckpoint } from './workspace-checkpoint'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { decodeAudio, formatSrtTime, formatTime, MAX_AUDIO_FILE_BYTES } from './audio'
+import { decodeAudio, formatSrtTime, formatTime, LARGE_AUDIO_HINT_BYTES, MAX_AUDIO_FILE_BYTES, readAudioBytes } from './audio'
 import { Icon } from './icons'
 import { Brand } from './components/Brand'
 import type { EngineState, Segment } from './types'
@@ -40,7 +42,10 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
   const [audioHash, setAudioHash] = useState<string | null>(null)
   const [resumeState, setResumeState] = useState<WorkspaceCheckpoint['resume']>(null)
   const [restored, setRestored] = useState(false)
+  const [localPreparation, setLocalPreparation] = useState(false)
+  const audioLoadRef = useRef<AbortController | null>(null)
   const [audioLoading, setAudioLoading] = useState(false)
+  const [audioProgress, setAudioProgress] = useState<number | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [pcm, setPcm] = useState<Float32Array | null>(null)
   const [duration, setDuration] = useState(0)
@@ -80,7 +85,7 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
   }), [audioName, audioHash, duration, current, language, modelName, selectedId, taskId, segments, resumeState, taskDiarizationMode])
   const checkpointRef = useRef(checkpoint)
   useEffect(() => { checkpointRef.current = checkpoint }, [checkpoint])
-  const { ready: checkpointReady, status: checkpointStatus, saveNow, retrySave } = useWorkspaceCheckpoint(ownerId, checkpoint, restore)
+  const { ready: checkpointReady, status: checkpointStatus, saveNow, planManualSave } = useWorkspaceCheckpoint(ownerId, checkpoint, restore)
   const saveNowRef = useRef(saveNow)
   useEffect(() => { saveNowRef.current = saveNow }, [saveNow])
 
@@ -117,7 +122,7 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
       await saveNowRef.current(value)
     }
     whisperRef.current = whisper
-    return () => whisper.destroy()
+    return () => { audioLoadRef.current?.abort(); whisper.destroy() }
   }, [])
 
   useEffect(() => {
@@ -223,38 +228,106 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
   }
 
   const loadAudio = async (file: File) => {
-    if (!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing') {
+    if (!checkpointReady || audioLoadRef.current || audioLoading || checkingDiarization || correcting || engine === 'transcribing') {
       setMessage('Tunggu transkripsi dan penyimpanan SQLite selesai sebelum mengganti audio.')
       return
     }
-    if (file.size > MAX_AUDIO_FILE_BYTES) {
-      setMessage('Audio lebih besar dari batas aman 250 MB. Potong atau kompres rekaman sebelum memuatnya.')
+    if (file.size > (localPreparation ? MAX_LOCAL_MEDIA_BYTES : MAX_AUDIO_FILE_BYTES)) {
+      setMessage(localPreparation ? 'Berkas melebihi batas persiapan lokal 2 GB.' : 'Berkas melebihi batas browser 250 MB. Gunakan persiapan FFmpeg lokal untuk berkas hingga 2 GB, atau potong rekaman.')
       return
     }
     setAudioLoading(true)
-    setMessage('Menyiapkan audio 16 kHz di perangkat…')
+    setAudioProgress(0)
+    if (file.size > LARGE_AUDIO_HINT_BYTES) {
+      const proceed = window.confirm(`Rekaman ini ${Math.round(file.size / (1024 * 1024))} MB. Menyiapkannya membutuhkan memori dan waktu di perangkat ini, dan dapat gagal bila RAM terbatas. Lanjutkan?`)
+      if (!proceed) { setAudioProgress(null); setAudioLoading(false); return }
+      setMessage('Membaca rekaman besar…')
+    } else {
+      setMessage('Menyiapkan audio 16 kHz di perangkat…')
+    }
+    const controller = new AbortController()
+    audioLoadRef.current = controller
     try {
-      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-      const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-      if (restored && audioHash && hash !== audioHash) {
-        setMessage('Rekaman berbeda dari checkpoint. Pilih rekaman asli; teks yang dipulihkan tetap aman.')
-        return
+      let bytes: ArrayBuffer | undefined
+      let decoded: { pcm: Float32Array; duration: number } | undefined
+      let hash: string
+      if (localPreparation) {
+        setMessage('Mengirim berkas ke layanan pada perangkat ini…')
+        const prepared = await prepareLocalMedia(file, ownerId, controller.signal, progress => {
+          setAudioProgress(progress.percent)
+          setMessage(progress.phase === 'uploading' ? 'Membaca berkas ke penyimpanan sementara lokal…' : progress.phase === 'converting' ? 'FFmpeg sedang mengekstrak audio di perangkat ini…' : 'Menyiapkan audio hasil konversi…')
+        })
+        decoded = prepared; hash = prepared.hash
+      } else {
+        // Read once with progress; finish hashing before the decoder consumes bytes.
+        bytes = await readAudioBytes(file, percent => setAudioProgress(percent), controller.signal)
+        setAudioProgress(null); setMessage('Memeriksa identitas rekaman…')
+        const digest = await crypto.subtle.digest('SHA-256', bytes)
+        hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
       }
-      const decoded = await decodeAudio(file)
-      if (!restored) { taskIdRef.current = null; setTaskId(null); persistenceRunRef.current = null }
+      controller.signal.throwIfAborted()
+      let keepRestored = restored
+      if (restored && audioHash && hash !== audioHash) {
+        setAudioProgress(null)
+        const proceed = window.confirm('Audio ini berbeda dari rekaman pada ruang kerja yang dipulihkan. Buang teks yang dipulihkan dan mulai transkripsi baru untuk rekaman ini? Teks lama tetap tersedia di halaman Tasks.')
+        if (!proceed) {
+          setMessage('Ruang kerja yang dipulihkan tetap dipakai. Pilih rekaman asli untuk melanjutkan, atau gunakan Ruang kerja baru untuk memulai ulang.')
+          return
+        }
+        keepRestored = false
+      }
+      setMessage('Menyiapkan audio 16 kHz di perangkat…')
+      decoded ??= await decodeAudio(bytes!, controller.signal)
+      controller.signal.throwIfAborted()
+      setAudioProgress(null)
+      if (!keepRestored) { taskIdRef.current = null; setTaskId(null); persistenceRunRef.current = null }
+      if (!keepRestored) setTaskDiarizationOverride(null)
       setAudioHash(hash)
       audioRef.current?.pause()
-      setPlaying(false); if (!restored) setCurrent(0)
+      setPlaying(false); if (!keepRestored) setCurrent(0)
       setAudioUrl(URL.createObjectURL(file)); setAudioName(file.name)
       setPcm(decoded.pcm); setDuration(decoded.duration)
-      if (!restored) { setSegments([]); setSelectedId(null); setResumeState(null) }
+      if (!keepRestored) { setSegments([]); setSelectedId(null); setResumeState(null) }
       setRestored(false)
       setMessage('Audio siap. Tekan Transkripsikan untuk menjalankan whisper.cpp secara lokal.')
     } catch (error) {
-      setMessage(error instanceof Error && error.message === 'audio-duration-out-of-range'
-        ? 'Durasi audio harus lebih dari nol dan tidak boleh melebihi empat jam.'
-        : 'Format audio tidak dapat dibaca oleh browser ini. Coba WAV, MP3, M4A, atau OGG.')
-    } finally { setAudioLoading(false) }
+      setAudioProgress(null)
+      const detail = error instanceof Error ? error.message : String(error)
+      if (controller.signal.aborted) { setMessage('Persiapan dibatalkan. Rekaman sebelumnya tetap tersedia.'); return }
+      if (localPreparation) { setMessage(detail); return }
+      console.error('Audio load failed:', error)
+      if (error instanceof Error && error.message === 'audio-file-too-large') {
+        setMessage('Rekaman terlalu besar untuk disiapkan di perangkat ini (maksimal 250 MB). Potong atau kompres rekaman, lalu coba lagi.')
+      } else if (error instanceof Error && error.message.startsWith('decode-audio-failed:')) {
+        setMessage('Format audio tidak dapat dibaca oleh browser ini. Coba WAV, MP3, M4A, atau OGG.')
+      } else if (error instanceof Error && error.message === 'audio-duration-out-of-range') {
+        setMessage('Durasi audio harus lebih dari nol dan tidak boleh melebihi empat jam.')
+      } else if (error instanceof Error && (detail.includes('Gagal memutar') || detail.includes('Render gagal') || detail.includes('play') || detail.includes('media'))) {
+        setMessage('File tidak dapat diputar di browser ini. Coba konversi ke WAV, MP3, atau M4A, lalu coba lagi.')
+      } else if (error instanceof Error && (detail.includes('terlalu lambat') || detail.includes('Gagal memuat'))) {
+        setMessage('File terlalu lambat dimuat atau browser tidak mendukung codec. Coba file yang lebih kecil atau konversi ke WAV/MP3.')
+      } else if (error instanceof Error && detail.includes('korrup') || detail.includes('korup')) {
+        setMessage('File audio mungkin korup. Coba file lain atau konversi ke format yang lebih sederhana.')
+      } else {
+        setMessage(file.size > LARGE_AUDIO_HINT_BYTES
+          ? 'Rekaman besar gagal disiapkan. Memori lokal tidak cukup. Potong atau kompres rekaman, lalu coba lagi.'
+          : 'Audio tidak dapat disiapkan. Coba lagi, atau gunakan rekaman yang lebih kecil.')
+      }
+    } finally { audioLoadRef.current = null; setAudioLoading(false) }
+  }
+
+  const discardRestoredWorkspace = () => {
+    if (engine === 'transcribing' || audioLoading || checkingDiarization || correcting) {
+      setMessage('Tunggu proses yang sedang berjalan selesai sebelum memulai ruang kerja baru.')
+      return
+    }
+    audioRef.current?.pause()
+    setRestored(false)
+    setPlaying(false); setTaskId(null); taskIdRef.current = null; persistenceRunRef.current = null
+    setSegments([]); setSelectedId(null); setResumeState(null); setTaskDiarizationOverride(null)
+    setAudioHash(null); setAudioUrl(null); setPcm(null); setDuration(0); setCurrent(0)
+    setAudioName('Tidak ada audio'); setLanguage('auto')
+    setMessage('Ruang kerja baru siap. Pilih audio untuk memulai transkripsi baru; teks sebelumnya tetap ada di halaman Tasks.')
   }
 
   const transcribe = async () => {
@@ -342,6 +415,13 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
     window.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
+  const exportWord = async () => {
+    try {
+      const { transcriptDocx, saveDocx } = await import('./docx-export')
+      saveDocx(await transcriptDocx({ title: 'Transkrip', source: audioName, language, segments: segments.slice() }), 'transkrip.docx')
+    } catch { setMessage('Dokumen Word gagal dibuat. Coba lagi atau gunakan ekspor TXT.') }
+  }
+
   const correctTranscript = async () => {
     if (!segments.length || correcting || engine === 'transcribing' || !checkpointReady) return
     setCorrecting(true)
@@ -376,19 +456,23 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
 
     <section className="checkpoint-bar" aria-label="Penyimpanan ruang kerja">
       <div><Icon name="shield"/><span role="status">{checkpointStatus}</span></div>
-      {(restored || resumeState) && <p>{resumeState ? `Progres tersimpan sampai ${formatTime(resumeState.nextSample / 16000)}. ` : ''}{!pcm ? 'Pilih rekaman asli untuk melanjutkan audio. ' : ''}{engine !== 'ready' && engine !== 'transcribing' ? 'Muat model untuk melanjutkan transkripsi.' : ''}</p>}
-      <button onClick={retrySave}>Simpan sekarang</button>
+      {(restored || resumeState) && <p>{resumeState ? `Progres tersimpan sampai ${formatTime(resumeState.nextSample / 16000)}. ` : ''}{!pcm ? 'Pilih rekaman asli untuk melanjutkan audio, atau buang ruang kerja ini untuk memakai rekaman lain. ' : ''}{engine !== 'ready' && engine !== 'transcribing' ? 'Muat model untuk melanjutkan transkripsi.' : ''}</p>}
+      {(restored || resumeState) && <button className="checkpoint-discard" onClick={discardRestoredWorkspace}>Ruang kerja baru</button>}
+      <button className="checkpoint-save" onClick={planManualSave}>Simpan sekarang</button>
     </section>
 
     <section className="audio-deck" aria-label="Audio player">
       <div className="deck-heading"><span className="file-name"><Icon name="folder"/>{audioName}</span><span>{formatTime(current, true)} / {formatTime(duration, true)}</span></div>
       <Waveform pcm={pcm} duration={duration} current={current} onSeek={seek}/>
+        <label className="media-preparation-mode"><input type="checkbox" checked={localPreparation} disabled={audioLoading || engine === 'transcribing' || !isLoopbackHostname(location.hostname)} onChange={event => setLocalPreparation(event.target.checked)}/><span>Siapkan dengan FFmpeg lokal<small>Berkas hingga 2 GB · salinan sementara di perangkat dihapus setelah persiapan. Memerlukan FFmpeg.</small></span></label>
       <div className="transport">
         <button className="seek-step" aria-label="Mundur 5 detik" onClick={() => seek(current - 5)}><Icon name="rewind"/></button>
         <button className="primary-transport" aria-label={playing ? 'Jeda' : 'Putar'} onClick={togglePlay} disabled={!audioUrl}><Icon name={playing ? 'pause' : 'play'}/></button>
         <button className="seek-step" aria-label="Maju 5 detik" onClick={() => seek(current + 5)}><Icon name="forward"/></button>
         <span className="transport-time">{formatTime(current, true)}</span>
-        <label className="file-action"><Icon name="upload"/><span>Pilih audio</span><input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label>
+        {audioLoading && <button type="button" onClick={() => { audioLoadRef.current?.abort(); setMessage('Menghentikan persiapan…'); }}><Icon name="close"/>Batalkan persiapan</button>}
+        <label className="file-action"><Icon name="upload"/><span>Pilih audio</span><input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} aria-label="Pilih rekaman audio atau video" type="file" accept={localPreparation ? "audio/*,video/*,.mkv,.avi,.mov,.webm" : "audio/*,video/mp4"} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void loadAudio(file) }}/></label>
+        {audioLoading && audioProgress !== null && <progress className="audio-progress" aria-label={`Membaca audio ${audioProgress}%`} value={audioProgress} max="100"/>}
         <label className="diarization-task-mode"><span>Pembicara</span><select aria-label="Mode diarization untuk transkripsi ini" value={taskDiarizationMode} disabled={engine === 'transcribing' || checkingDiarization} onChange={event => setTaskDiarizationOverride(event.target.value as DiarizationMode)}><option value="auto">Auto</option><option value="required">Required</option><option value="off">Off</option></select></label>
         <button className="run-button" disabled={!checkpointReady || audioLoading || !pcm || engine !== 'ready' || checkingDiarization} onClick={transcribe}>{checkingDiarization ? 'Memeriksa…' : engine === 'transcribing' ? 'Sedang memproses…' : resumeState ? 'Lanjutkan transkripsi' : 'Transkripsikan'}</button>
       </div>
@@ -401,9 +485,9 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
           {filtered.length ? filtered.map((segment) => <article key={segment.id} className={`segment ${selectedId === segment.id ? 'active' : ''}`}>
             <button className={`language-tag lang-${segment.language}`} aria-label="Pilih segmen dan buka bukti audio" onClick={() => { setSelectedId(segment.id); seek(segment.start) }}>{segment.language === 'id' ? 'ID' : segment.language === 'en' ? 'EN' : 'AU'}</button>
             <textarea readOnly={!checkpointReady || correcting || engine === 'transcribing'} aria-label="Paragraf transkrip" lang={segment.language === 'auto' ? undefined : segment.language} spellCheck value={segment.text} rows={Math.max(2, Math.ceil(segment.text.length / 76))} onFocus={() => setSelectedId(segment.id)} onChange={e => setSegments(values => values.map(value => value.id === segment.id ? { ...value, text: e.target.value } : value))}/>
-          </article>) : segments.length ? <div className="empty-transcript" role="status"><h2>Tidak ada hasil</h2><p>Tidak ada paragraf yang cocok dengan “{search}”. Ubah atau hapus kata pencarian untuk melihat transkrip lagi.</p></div> : <div className="empty-transcript"><div className="empty-raster" aria-hidden="true"/><h2>Dari percakapan,<br/>menjadi pemahaman.</h2><p>Masukkan model multilingual dan audio untuk membuat transkrip Bahasa Indonesia atau English. Semua pemrosesan terjadi di perangkat ini.</p><div><label className="file-action prominent"><Icon name="upload"/>Pilih audio<input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} type="file" accept="audio/*,video/mp4" onChange={e => e.target.files?.[0] && loadAudio(e.target.files[0])}/></label><button onClick={() => { setSegments(demoSegments); setSelectedId('d1'); setDuration(60); setMessage('Mode pratinjau — teks ini hanya data ilustratif.') }}>Pratinjau ruang kerja</button></div></div>}
+          </article>) : segments.length ? <div className="empty-transcript" role="status"><h2>Tidak ada hasil</h2><p>Tidak ada paragraf yang cocok dengan “{search}”. Ubah atau hapus kata pencarian untuk melihat transkrip lagi.</p></div> : <div className="empty-transcript"><div className="empty-raster" aria-hidden="true"/><h2>Dari percakapan,<br/>menjadi pemahaman.</h2><p>Masukkan model multilingual dan audio untuk membuat transkrip Bahasa Indonesia atau English. Semua pemrosesan terjadi di perangkat ini.</p><div><label className="file-action prominent"><Icon name="upload"/>Pilih audio<input disabled={!checkpointReady || audioLoading || checkingDiarization || correcting || engine === 'transcribing'} aria-label="Pilih rekaman audio atau video" type="file" accept={localPreparation ? "audio/*,video/*,.mkv,.avi,.mov,.webm" : "audio/*,video/mp4"} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void loadAudio(file) }}/></label><button onClick={() => { setSegments(demoSegments); setSelectedId('d1'); setDuration(60); setMessage('Mode pratinjau — teks ini hanya data ilustratif.') }}>Pratinjau ruang kerja</button></div></div>}
         </div>
-        <div className="edit-bar"><span>{segments.length} paragraf</span><span>{segments.reduce((count, segment) => count + (segment.text.match(/\S+/g)?.length ?? 0), 0)} kata</span><button disabled={!segments.length || correcting || engine === 'transcribing' || !checkpointReady} onClick={correctTranscript}><Icon name="edit"/>{correcting ? 'Model bekerja…' : 'Koreksi ejaan lokal'}</button><button disabled={!segments.length} onClick={() => exportTranscript('txt')}><Icon name="download"/>TXT per kalimat</button><button disabled={!segments.length} onClick={() => exportTranscript('srt')}><Icon name="download"/>SRT + waktu</button></div>
+        <div className="edit-bar"><span>{segments.length} paragraf</span><span>{segments.reduce((count, segment) => count + (segment.text.match(/\S+/g)?.length ?? 0), 0)} kata</span><button disabled={!segments.length || correcting || engine === 'transcribing' || !checkpointReady} onClick={correctTranscript}><Icon name="edit"/>{correcting ? 'Model bekerja…' : 'Koreksi ejaan lokal'}</button><button disabled={!segments.length} onClick={() => exportTranscript('txt')}><Icon name="download"/>TXT per kalimat</button><button disabled={!segments.length} onClick={() => exportTranscript('srt')}><Icon name="download"/>SRT + waktu</button><button disabled={!segments.length} onClick={() => void exportWord()}><Icon name="download"/>DOCX</button></div>
       </section>
 
       <aside className="evidence-panel" aria-labelledby="evidence-heading">
@@ -413,7 +497,7 @@ function App({ ownerId = 0, routeActive = true, diarizationMode: accountDiarizat
           <dl><div><dt>Keyakinan</dt><dd>{active.confidence ? `${Math.round(active.confidence * 100)}%` : 'Dari whisper.cpp'}</dd></div><div><dt>Model lokal</dt><dd>{modelName}</dd></div></dl>
           <button className="jump-button" onClick={() => seek(active.start)}><Icon name="play"/>Putar dari segmen ini</button>
         </div> : <div className="inspector-empty"><div className="pixel-cursor"/><p>Pilih baris transkrip untuk memeriksa bukti audio, bahasa, dan waktunya.</p></div>}
-        <div className="device-boundary"><Icon name="shield"/><div><b>Batas privasi</b><p>Whisper dan model audio tetap di browser. Diarization opsional mengirim WAV sementara hanya ke layanan loopback lokal lalu menghapusnya; koreksi teks memakai Ollama lokal.</p></div></div>
+        <div className="device-boundary"><Icon name="shield"/><div><b>Batas privasi</b><p>Whisper dan model audio tetap di browser. Persiapan FFmpeg dan diarization opsional memakai salinan media sementara pada layanan lokal lalu menghapusnya; koreksi teks memakai Ollama lokal.</p></div></div>
       </aside>
     </section>
 

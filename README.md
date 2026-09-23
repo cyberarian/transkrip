@@ -1,22 +1,29 @@
 # Transkrip
 
-Private, device-local Bahasa Indonesia and English transcription for professional workflows. Transkrip combines a React review interface, whisper.cpp WebAssembly, SQLite history, optional pyannote.audio speaker diarization, and Ollama dialogue normalization. Data remains on the user's device: no cloud transcription, cloud database, analytics, or remote error reporting is used.
+Private, device-local Bahasa Indonesia and English transcription for turning recordings into reviewable, searchable working records. Transkrip combines a React review interface, whisper.cpp WebAssembly, SQLite history, optional FFmpeg media preparation, pyannote.audio speaker diarization, and DocETL/Ollama analysis. Data remains on the user's device: no cloud transcription, cloud database, analytics, or remote error reporting is used.
+
+Built for meetings, interviews, lectures, consultations, and oral histories across legal work, media, education, public and private organizations, HR, corporate secretariat, public communication, libraries, and archives. The shared workflow does not require an information-management background. See [PRODUCT.md](PRODUCT.md) for product direction and [MARKET.md](MARKET.md) for market research.
 
 **Maintainer:** Adnuri Mohamidi
+
+[Setup](#requirements) · [Supported files](#supported-file-types) · [Large recordings](#large-audio-and-video-file-handling) · [Analysis and Word exports](#source-linked-analysis-and-word-documents) · [Commands](#commands)
 
 ## Features
 
 - On-device Bahasa Indonesia, English, and mixed-language transcription
 - Multithreaded whisper.cpp inference in a dedicated browser worker
 - Base multilingual, Small Q5_1 multilingual, and Cahya Medium Q5_0 Indonesian models
-- Local audio decoding, waveform navigation, seeking, and timestamp evidence
+- Browser audio decoding up to 250 MiB, or opt-in local FFmpeg preparation up to 2 GiB, with progress and cancellation
+- Waveform navigation, seeking, and timestamp evidence; both preparation modes retain a four-hour audio limit
 - Editable transcript paragraphs with search and language indicators in the live workspace
-- Clean TXT export with one normalized sentence per line, plus timestamped SRT export
+- Clean TXT, timestamped SRT, and local DOCX transcript exports; DOCX also available from saved dialogue
 - Settings page for selecting an installed local Ollama model, typography preset, and per-account diarization policy
 - Automatic loopback Ollama connectivity check at every app start, with a signed-in status indicator and manual retry
 - Distinctive voice-to-text “T” brand mark shared by every route and the browser icon
 - Conservative typo correction in the workspace and bilingual dialogue normalization in task history
-- Optional tenant-scoped DocETL analysis for meeting minutes, action items, and cross-transcript themes
+- Optional owner-scoped DocETL analysis for meeting minutes, action items, and cross-transcript themes
+- Clickable analysis references with retained source excerpts and available timestamps; TXT, Markdown, JSON, and DOCX analysis exports
+- Automatic workspace checkpoints and recovery from saved transcription chunks after reselecting the original recording
 - Responsive, keyboard-accessible interface with reduced-motion support
 - Device-local SQLite task history with expandable editing and immediate saves
 - Owner-scoped SQLite full-text search across filenames, raw transcripts, and corrected text, with language and status filters
@@ -29,9 +36,49 @@ Private, device-local Bahasa Indonesia and English transcription for professiona
 - Opaque HttpOnly sessions, scrypt password hashing, login throttling, and same-origin mutation checks
 - No public registration, analytics, cloud transcription, cloud database, or remote error reporting
 
+## Using Transkrip
+
+### Preserving work through idle time and sleep
+
+Workspace edits and completed transcription chunks now checkpoint automatically to local SQLite. Watch **Tersimpan di perangkat** in the workspace. If saving fails, keep the tab open, restore the local service, and choose **Simpan sekarang**; unfinished chunks stop before advancing without a checkpoint. **Simpan sekarang** also re-arms a conflicted checkpoint: once the local service answers, the workspace saves again without reloading the page.
+
+After a reload, your current transcript and timestamps return. To play or continue transcribing, reselect the original audio file and load the model again. Selecting a different recording asks for confirmation before discarding the restored text, and **Ruang kerja baru** in the checkpoint bar starts a fresh workspace at any time; restored text stays reachable in Tasks. Recordings over 100 MB ask for confirmation before loading, show a read-progress bar, and decode directly at 16 kHz to keep peak memory low; preparation errors distinguish supported size/duration limits and decoding or local-service failures where possible. The file is fingerprint-checked; audio is never stored permanently. An expired session locks the interface while retaining the working session for same-account login. Dialogue edits in Tasks also autosave.
+
+See [durable workspace recovery](docs/decisions/002-durable-workspace-recovery.md) for recovery guarantees and limits.
+
+### Large audio and video file handling
+
+Enable **Siapkan dengan FFmpeg lokal** before selecting a large recording. Install FFmpeg 6 or newer with the `fd` protocol available (`ffmpeg -protocols`); optionally set `TRANSKRIP_FFMPEG` to its executable path. This mode accepts up to 2 GiB, streams the original file to local disk while computing its SHA-256 fingerprint, and extracts the first audio track to 16 kHz mono PCM. Whisper still runs in the browser. No Python service is required for preparation.
+
+The interface reports upload, conversion, and download phases and offers cancellation. One preparation runs at a time; another request receives a retry message. Allow space for the input plus up to 921.6 MB of PCM under `data/media-staging`. Use one server instance per staging directory. Temporary files are deleted after response completion, failure, or cancellation. A hard process stop can leave files until the next preparation. This is ordinary file deletion, not secure erasure.
+
+This avoids holding the compressed input in browser memory for decoding, but the complete PCM and Whisper model still occupy browser memory. It does not provide streaming transcription, a durable batch queue, or a guarantee that every 2 GB recording will fit a device. Original-media playback remains browser-codec dependent. Browser-decoder cancellation discards the result when native decoding returns; the native API itself is not interruptible.
+
+In browser mode, audio and MP4 imports use `OfflineAudioContext.decodeAudioData` at 16 kHz, followed by mono conversion. There is no media-element extraction fallback. FFmpeg preparation is explicitly enabled by the user and has a ten-minute server deadline. A video that plays in the browser is not necessarily decodable by this API.
+
+Both codec compatibility and available memory can cause import failures. Browser decoding was checked with a 115.2 MB, ten-minute stereo WAV and a two-second MP4/AAC recording. Local FFmpeg preparation was checked with a 276 MB, 24-minute stereo WAV and a short MKV/AAC recording in Chromium on macOS; these checks do not guarantee every file or browser. See [audio processing verification](docs/audio-processing-performance.md) for measurements and limits.
+
+If a recording cannot be decoded, extract its first audio track with an external FFmpeg installation:
+
+```bash
+ffmpeg -i input.mp4 -map 0:a:0 -vn -ac 1 -ar 16000 -c:a pcm_s16le audio.wav
+```
+
+The resulting file must still fit the import limits. Split long recordings if necessary; changing a filename extension does not convert its codec. Videos without an audio track cannot produce a transcript.
+
+### Source-linked analysis and Word documents
+
+New analysis prompts request passage references after findings. Node accepts references only from the selected, owner-authorized transcript snapshots and attaches the actual source text, filename, source version, and available speaker-block time range. Click a reference to review its excerpt. If free-form corrections no longer match the timestamped blocks, the excerpt has no timestamp rather than borrowing an inaccurate one. Old or uncited results remain readable and show a review notice. A valid reference does not prove that the claim is supported; human review remains necessary.
+
+Snapshots remain in the analysis record when the source transcript changes or is deleted. Delete the analysis as well to remove those retained excerpts. This is source traceability, not a signed audit trail or formal approval workflow.
+
+Workspace and saved-dialogue DOCX exports include transcript text and available speaker/time labels. Analysis DOCX exports include the draft result and a source appendix with internal citation links. TXT, Markdown, and JSON analysis exports also retain the cited source snapshots. Word generation is local and loaded only when an export is requested; DOCX is an output format, not an input format.
+
+See [reviewed-record implementation notes](docs/decisions/003-reviewed-record-workflow.md) for scope and remaining work.
+
 ## Full-stack architecture
 
-Transkrip is a local-first full-stack application. Its Node service binds to loopback, persists structured transcript data in SQLite, serves the production interface, and connects only to fixed loopback model services. Speech recognition and audio decoding remain in the browser. When diarization is enabled, the browser sends a bounded temporary WAV to Node and pyannote.audio on the same device; the WAV is deleted after finalization.
+Transkrip is a local-first full-stack application. Its Node service binds to loopback, persists structured transcript data in SQLite, serves the production interface, and connects only to fixed loopback model services. Speech recognition remains in the browser. Audio decoding uses the browser by default, with optional FFmpeg preparation on the same device. When diarization is enabled, the browser sends a bounded temporary WAV to Node and pyannote.audio on the same device; the WAV is deleted after finalization.
 
 ```mermaid
 flowchart TD
@@ -43,7 +90,10 @@ flowchart TD
     R --> A[Loopback Node API]
     A --> S[(SQLite in data/transkrip.sqlite)]
     A --> I[Local users + opaque sessions]
-    R --> E[Local TXT or SRT export]
+    R --> E[Local transcript and analysis exports\nTXT, SRT, Markdown, JSON, DOCX]
+    R -. opt-in media preparation .-> A
+    A -. temporary media .-> F[Local FFmpeg process]
+    F -. mono 16 kHz PCM .-> R
     R -. temporary PCM16 WAV .-> A
     A -. optional speaker timestamps .-> P[pyannote.audio Community-1\n127.0.0.1:8765]
     A -. explicit text normalization .-> O[Ollama\n127.0.0.1:11434]
@@ -55,7 +105,8 @@ flowchart TD
 |---|---|---|
 | Interface | React 19, TypeScript 6, CSS | Audio controls, transcript review, editing, search, export, and status feedback |
 | Build/runtime | Vite 8, Node.js 24 | Development orchestration, production serving, security headers, SQLite API, and fixed loopback integrations |
-| Audio | Web Audio API | Decode supported media and produce mono 16 kHz PCM |
+| Audio | Web Audio API; optional FFmpeg 6+ | Browser decoding or bounded loopback preparation, producing mono 16 kHz PCM |
+| Word export | Lazy-loaded `docx` library | Generate local transcript documents and analysis source appendices |
 | Speech engine | whisper.cpp, WebAssembly, Web Workers | Chunked on-device inference without blocking the interface |
 | Local language service | Ollama + selectable local model | Optional typo correction and per-speaker bilingual normalization; no cloud endpoint |
 | Quality | Vitest, ESLint, TypeScript, GitHub Actions | Tests, static analysis, checksums, builds, and dependency audits |
@@ -67,13 +118,13 @@ flowchart TD
 
 ### Data and privacy boundaries
 
-- Audio decoding and Whisper inference occur in the browser.
+- Whisper inference occurs in the browser. Optional FFmpeg preparation sends the selected file to the authenticated loopback Node service, streams it to a temporary local file, and returns mono 16 kHz PCM. Temporary media is removed on completion, failure, or cancellation; leftovers from a killed process are removed when preparation next starts.
 - Whisper models remain in browser memory. Audio is never sent to a cloud service.
 - With optional diarization, a mono 16 kHz WAV is created only after the fixed-loopback sidecar reports ready and the selected mode permits it. The WAV is staged under a server-generated task ID, processed locally, and deleted after success, error, malformed finalization, or service restart.
 - Each incoming Whisper segment is appended to `data/transkrip.sqlite`. SQLite stores the audio filename, language, raw transcript, formatted speaker blocks, speaker labels, and task metadata—not audio bytes.
 - Full-text search is computed locally by SQLite FTS5. Its external-content index contains only filename, raw-transcript, and corrected-text copies derived from canonical rows; database triggers keep it synchronized and tenant ownership is always enforced through the canonical `transcriptions` table.
 - The page CSP restricts connections to the application origin.
-- Text reaches Ollama only after the user selects **Koreksi ejaan lokal** or **Normalisasi bilingual**.
+- Text reaches Ollama only through user-requested correction, dialogue normalization, or analysis. Analysis sends selected transcript passages through the local DocETL worker.
 - At startup, Node checks only Ollama's loopback `/api/tags` metadata endpoint. It does not start Ollama, load a model, or send audio, transcripts, prompts, filenames, or account data.
 - Server-side normalization connects exclusively to `http://127.0.0.1:11434/api/chat`.
 - Diarization readiness and processing connect exclusively to `http://127.0.0.1:8765/health` and `/diarize`.
@@ -91,7 +142,8 @@ flowchart TD
 - npm 12 (declared by `packageManager` in `package.json`)
 - Git LFS for the bundled browser models
 - A current Chromium-family browser for the most predictable threaded WASM and large-model support
-- Optional: Ollama for local typo correction and bilingual normalization
+- Optional: FFmpeg 6 or newer with the `fd` protocol for large-media preparation; this feature does not require Python
+- Optional: Ollama for local typo correction, bilingual normalization, and DocETL analysis
 - Optional: Python 3, FFmpeg, a separate virtual environment, and accepted Community-1 model access for multi-speaker diarization
 - Optional: Python 3.10 or newer in a separate virtual environment for local DocETL analysis; Python 3.12 is the recommended compatibility target
 - Optional: Emscripten SDK only when rebuilding whisper.cpp
@@ -177,6 +229,7 @@ All environment variables are read through Node 24's `--env-file-if-exists` opti
 | `TRANSKRIP_HOST` | `127.0.0.1` | Bind address for the Node HTTP server |
 | `TRANSKRIP_PORT` | `8787` | Port for the Node HTTP server |
 | `TRANSKRIP_DB_PATH` | `data/transkrip.sqlite` | Absolute path for the SQLite database file |
+| `TRANSKRIP_FFMPEG` | `ffmpeg` on PATH | Executable path for optional media preparation; must support the `fd` protocol |
 | `TRANSKRIP_STATIC` | `1` (serve `dist/`) | Set to `0` to skip serving static files (used by `scripts/dev.mjs` for Vite) |
 | `TRANSKRIP_ANALYSIS_PYTHON` | auto-discovered `.venv-analysis` | Absolute path to a Python interpreter for the DocETL worker |
 | `TRANSKRIP_ANALYSIS_AUTOSTART` | `1` | Set to `0` to prevent automatic DocETL worker startup |
@@ -192,7 +245,7 @@ The **Search transcripts** control searches the local filename, original Whisper
 
 After the workspace has been opened, Transkrip keeps its browser worker, loaded model, decoded audio, current segments, and SQLite write queue mounted while you visit Landing, Tasks, Analysis, Settings, or About. Audio playback pauses when the workspace is hidden, but transcription continues. Segment writes begin immediately and do not wait for the optional diarization-audio upload. Processing tasks are visible in Tasks; open **Lihat progres** to read the partial text already committed to SQLite, refresh it, download a clean sentence-per-line TXT, or explicitly mark an abandoned task as interrupted.
 
-Closing, reloading, or allowing the browser to discard the entire tab still stops browser-based inference because WebAssembly execution cannot survive a destroyed page. The partial text already acknowledged by SQLite remains recoverable in Tasks, but the interrupted audio must be transcribed again to finish the missing remainder. Disable aggressive browser memory-saving for long recordings.
+Closing, reloading, or allowing the browser to discard the entire tab still stops browser-based inference because WebAssembly execution cannot survive a destroyed page. Acknowledged text remains recoverable in Tasks. When the workspace has a saved chunk checkpoint, reselect the original recording, reload the model, and choose **Lanjutkan transkripsi** to resume from that checkpoint; an unfinished chunk may run again. Older or abandoned tasks without a workspace checkpoint retain their partial text but cannot resume automatically. Disable aggressive browser memory-saving for long recordings.
 
 The canonical schema contains:
 
@@ -235,13 +288,14 @@ During the first RBAC migration, all pre-account transcriptions are assigned to 
 
 Keep at least two enabled administrator accounts for recovery. The server transactionally prevents disabling, demoting, or deleting the final enabled administrator. An administrator cannot delete the account backing their current session, and administrator status never grants access to another owner's transcript content.
 
-### Authentication and account API
+### Authentication, runtime, and media API
 
-All responses use the existing JSON data/error envelope. Transcript ownership always comes from the server-side session rather than a client-supplied user ID.
+JSON endpoints use the existing data/error envelope. A successful `POST /api/media/prepare` response instead streams binary Float32 PCM with `X-Audio-Sha256` and `X-Audio-Duration` headers. Send media as `application/octet-stream` with its `Content-Length`; same-origin and loopback checks apply. Transcript ownership always comes from the server-side session rather than a client-supplied user ID.
 
 | Method and route | Access | Purpose |
 |---|---|---|
 | `POST /api/auth/login` | Public, loopback | Verify credentials and rotate an opaque session cookie |
+| `POST /api/media/prepare` | Signed in; loopback only | Prepare a binary media file as mono 16 kHz Float32 PCM; up to 2 GiB, one job at a time |
 | `GET /api/auth/session` | Signed in | Return the safe current-user profile and permissions |
 | `POST /api/auth/logout` | Signed in | Revoke the current session and clear its cookie |
 | `PATCH /api/account/preferences` | Signed in, same origin | Save the authenticated user's validated diarization default |
@@ -376,7 +430,7 @@ npm run assets:verify
 
 ## Whisper processing pipeline
 
-1. The browser decodes the selected audio or supported video container.
+1. The browser decodes the selected recording, or opt-in local FFmpeg prepares its first audio track.
 2. Audio is converted to mono, 16 kHz `Float32Array` PCM.
 3. For Auto or Required, the browser asks Node to probe the fixed-loopback sidecar; Off skips this request entirely.
 4. A temporary PCM16 WAV is created and uploaded only after a ready result. Required stops safely if readiness or bounded WAV creation fails.
@@ -387,7 +441,22 @@ npm run assets:verify
 9. If pyannote becomes unavailable after work begins, the task still completes with one language-appropriate default speaker.
 10. TXT output normalizes whitespace and places each detected sentence on its own line; SRT preserves timestamps.
 
-Audio imports are limited to 250 MB and four decoded hours. The worker applies its own duration, language, request, timeout, and memory checks.
+### Supported file types
+
+The default recording picker requests `audio/*,video/mp4`; optional local FFmpeg preparation expands it to audio and video, including MOV, MKV, AVI, and WebM. This is a file-selection filter, not a guarantee that the browser can decode every matching file. Actual support depends on the container, embedded audio codec, browser, and operating system.
+
+| Use | File types | Support and limitations |
+| --- | --- | --- |
+| Audio import | WAV (`.wav`), MP3 (`.mp3`), M4A/AAC (`.m4a`, `.aac`), Ogg (`.ogg`, `.oga`, `.opus`), FLAC (`.flac`), audio WebM (`.webm`) | Selectable when recognized as audio by the file picker. Decoding depends on browser codec support; PCM WAV was verified in Chromium. |
+| Video import | MP4 (`.mp4`) with an audio track | Explicitly included in the picker. MP4 with AAC audio was verified in Chromium; other embedded codecs are not guaranteed. Only audio is transcribed. |
+| Other video containers | MOV, MKV, AVI, video WebM | Available with optional FFmpeg preparation; MKV/AAC was checked in Chromium on macOS. Codec support depends on the installed FFmpeg build. Original recording playback still depends on the browser. |
+| Local speech model import | GGML (`.bin`) | Must be a compatible whisper.cpp model, up to 750 MB. Arbitrary binary files are not models. |
+| Transcript export | TXT (`.txt`), SRT (`.srt`), DOCX (`.docx`) | Workspace downloads; saved dialogue also exports DOCX. These are not transcript import formats. |
+| Analysis export | TXT (`.txt`), Markdown (`.md`), JSON (`.json`), DOCX (`.docx`) | Available for analysis results. Analysis uses saved transcripts, not direct document or media uploads. |
+
+Recording limits apply to audio and video: **250 MB** (262,144,000 bytes) per file in browser mode, or **2 GB** (2,147,483,648 bytes) with optional local FFmpeg preparation. Both modes allow at most **four hours** of decoded audio. Recordings over **100 MB** prompt before loading. Files below these limits can still exceed available memory. PDF, DOCX, images, and subtitle files are not recording inputs.
+
+Browser-mode imports are limited to 250 MB and four decoded hours. The worker applies its own duration, language, request, timeout, and memory checks. Files are read once into a preallocated buffer, hashed, and decoded directly at 16 kHz. Stereo/multichannel audio is downmixed in short batches that yield to the interface; mono audio reuses its decoded channel. Supported video containers use the same browser decoder without playback. Unsupported codecs report a format error; convert those recordings to WAV, MP3, or M4A. Decoding still requires the complete compressed file and decoded audio in memory.
 
 ### Cross-platform scheduling and model sizing
 
@@ -426,7 +495,7 @@ After rebuilding, review and update `ASSETS.sha256` only after confirming the so
 | `npm run build` | Run TypeScript project builds and create `dist/` |
 | `npm run start` / `npm run preview` | Serve the production build and API at `127.0.0.1:8787` |
 | `npm run lint` | Run ESLint |
-| `npm test` | Run the Vitest suite once |
+| `npm test` | Run frontend Vitest and Node server tests; real media tests require FFmpeg |
 | `npm run typecheck` | Run strict TypeScript project checks |
 | `npm run assets:verify` | Verify model and Whisper runtime SHA-256 checksums |
 | `npm run check` | Run lint, tests, typecheck, checksums, and production build |
@@ -434,6 +503,8 @@ After rebuilding, review and update `ASSETS.sha256` only after confirming the so
 | `npm audit --omit=dev --audit-level=high` | Audit production dependency advisories |
 | `.venv-diarization/bin/python diarization/service.py` | Start optional local speaker diarization on `127.0.0.1:8765` |
 | `.venv-analysis/bin/python analysis/service.py` | Start optional local DocETL analysis on `127.0.0.1:8770` |
+
+The media tests require FFmpeg even when you normally use browser decoding. Run the Python analysis contracts separately with `python3 -m unittest discover -s analysis -p "test_*.py"`; `npm run check` does not include that suite.
 
 ## Project structure
 
@@ -449,6 +520,9 @@ src/
   analysis-model.ts       Separate validated Ollama model preference for analysis
   appearance.ts           Validated device-local typography preference
   export.ts               Clean sentence-aware TXT formatter
+  docx-export.ts          Local Word generation with source bookmarks
+  media-preparation.ts    Opt-in upload, progress, cancellation, and PCM validation
+  media-limits.ts         Shared preparation size, duration, and timeout bounds
   correction.ts           Bounded local Ollama correction client
   ollama-models.ts         Bounded and validated local model inventory client
   ollama-status.ts         Authenticated startup-status API client and validator
@@ -488,6 +562,8 @@ server/                    SQLite/FTS5 repository, validated API, correction, an
   diarization-health.ts    Fixed-loopback pyannote readiness probe and bounded status snapshot
   docetl-client.ts         Fixed-loopback bounded DocETL health and analysis client
   analysis-worker.ts       Cross-platform optional worker discovery and lifecycle
+  analysis-evidence.ts     Authorized source snapshots and citation validation
+  media-preparation.ts     Streamed media staging, hashing, FFmpeg, and cleanup
 analysis/
   service.py               Loopback-only DocETL Frame pipeline over selected text
   requirements.txt         Pinned optional DocETL environment
@@ -496,6 +572,7 @@ diarization/
   requirements.txt         Pinned Python diarization dependency
 DESIGN.md                  Product design system and interaction rules
 PRODUCT.md                 Product requirements and boundaries
+MARKET.md                  Competitor research and differentiation opportunities
 PRODUCTION_READINESS.md    Deployment, smoke test, and rollback checklist
 ```
 
@@ -623,11 +700,3 @@ Transkrip is released under the [MIT License](LICENSE). The bundled whisper.cpp 
 **Adnuri Mohamidi** — project maintainer and release owner.
 
 Maintenance responsibilities include privacy-boundary review, dependency and model approval, release-gate verification, production-host configuration, and rollback readiness.
-
-### Preserving work through idle time and sleep
-
-Workspace edits and completed transcription chunks now checkpoint automatically to local SQLite. Watch **Tersimpan di perangkat** in the workspace. If saving fails, keep the tab open, restore the local service, and choose **Simpan sekarang**; unfinished chunks stop before advancing without a checkpoint.
-
-After a reload, your current transcript and timestamps return. To play or continue transcribing, reselect the original audio file and load the model again. The file is fingerprint-checked; audio is never stored permanently. An expired session locks the interface while retaining the working session for same-account login. Dialogue edits in Tasks also autosave.
-
-See [durable workspace recovery](docs/decisions/002-durable-workspace-recovery.md) for guarantees, limits, and performance evidence.

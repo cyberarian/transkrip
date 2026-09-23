@@ -22,7 +22,11 @@ export const ANALYSIS_PRESETS = [
 export type AnalysisPreset = typeof ANALYSIS_PRESETS[number]['id']
 export type AnalysisStatus = 'pending' | 'running' | 'completed' | 'error'
 export type AnalysisProgressPhase = 'queued' | 'preparing' | 'generating' | 'validating' | 'completed' | 'failed'
-export type AnalysisResult = { summary: string; primary: string; secondary: string; tertiary: string }
+export type AnalysisEvidence = {
+  ref: string; transcriptionId: number; source: string; blockId: string | null
+  start: number | null; end: number | null; quote: string; sourceUpdatedAt: string
+}
+export type AnalysisResult = { summary: string; primary: string; secondary: string; tertiary: string; evidence?: AnalysisEvidence[] }
 
 export type AnalysisRun = {
   id: number
@@ -47,8 +51,22 @@ export function analysisResultFromUnknown(value: unknown): AnalysisResult {
   const candidate = value as Record<string, unknown>
   const keys = ['summary', 'primary', 'secondary', 'tertiary'] as const
   if (keys.some(key => typeof candidate[key] !== 'string' || (candidate[key] as string).length > 100_000)) throw new Error('Hasil analisis tidak valid.')
-  const result = Object.fromEntries(keys.map(key => [key, (candidate[key] as string).trim()])) as AnalysisResult
+  const result: AnalysisResult = { summary: (candidate.summary as string).trim(), primary: (candidate.primary as string).trim(), secondary: (candidate.secondary as string).trim(), tertiary: (candidate.tertiary as string).trim() }
   if (!result.summary) throw new Error('Hasil analisis tidak valid.')
+  if (candidate.evidence !== undefined) {
+    if (!Array.isArray(candidate.evidence) || candidate.evidence.length > 64) throw new Error('Bukti analisis tidak valid.')
+    const seen = new Set<string>()
+    result.evidence = candidate.evidence.map((item: unknown) => {
+      if (!item || typeof item !== 'object') throw new Error('Bukti analisis tidak valid.')
+      const e = item as AnalysisEvidence
+      if (!Number.isSafeInteger(e.transcriptionId) || e.transcriptionId < 1 || typeof e.ref !== 'string' || !new RegExp(`^T${e.transcriptionId}P[1-9][0-9]*$`).test(e.ref) || seen.has(e.ref)
+        || typeof e.source !== 'string' || !e.source || e.source.length > 512 || (e.blockId !== null && (typeof e.blockId !== 'string' || e.blockId.length > 200))
+        || typeof e.quote !== 'string' || !e.quote.trim() || e.quote.length > 2000 || typeof e.sourceUpdatedAt !== 'string' || e.sourceUpdatedAt.length > 100
+        || !((e.start === null && e.end === null) || (typeof e.start === 'number' && Number.isFinite(e.start) && e.start >= 0 && typeof e.end === 'number' && Number.isFinite(e.end) && e.end >= e.start))) throw new Error('Bukti analisis tidak valid.')
+      seen.add(e.ref)
+      return { ref: e.ref, transcriptionId: e.transcriptionId, source: e.source, blockId: e.blockId, start: e.start, end: e.end, quote: e.quote, sourceUpdatedAt: e.sourceUpdatedAt }
+    })
+  }
   return result
 }
 
@@ -65,6 +83,7 @@ export function analysisRunFromUnknown(value: unknown): AnalysisRun {
   else item.result = null
   if (item.errorMessage !== null && typeof item.errorMessage !== 'string') throw new Error('Data analisis tidak valid.')
   if (typeof item.createdAt !== 'string' || typeof item.updatedAt !== 'string') throw new Error('Data analisis tidak valid.')
+  if (item.result && (item.result as AnalysisResult).evidence?.some(e => !(item.transcriptionIds as number[]).includes(e.transcriptionId))) throw new Error('Sumber bukti analisis tidak valid.')
   return item as unknown as AnalysisRun
 }
 
