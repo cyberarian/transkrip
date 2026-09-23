@@ -5,7 +5,7 @@ Private, device-local Bahasa Indonesia and English transcription for turning rec
 Built for meetings, interviews, lectures, consultations, and oral histories across legal work, media, education, public and private organizations, HR, corporate secretariat, public communication, libraries, and archives. The shared workflow does not require an information-management background. See [PRODUCT.md](PRODUCT.md) for product direction and [MARKET.md](MARKET.md) for market research.
 
 <p align="center">
-  <img src="public/workspace.png" alt="Transkrip's workspace" width="320" />
+  <img src="public/workspace.png" alt="Transkrip's workspace" width="620" />
 </p>
 **Maintainer:** Adnuri Mohamidi
 
