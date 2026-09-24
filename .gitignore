@@ -19,6 +19,27 @@ coverage/
 *.pem
 *.p12
 *.pfx
+*.p8
+*.mobileprovision
+*.provisionprofile
+
+# Local credential stores and private keys
+.aws/
+.azure/
+.config/gcloud/
+.ssh/
+secrets/
+credentials/
+*service-account*.json
+*service_account*.json
+*credentials*.json
+*secret*.json
+
+# Infrastructure state can contain provider credentials and resource data
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
 
 # Device-local application data
 # Includes tenant transcripts, staged audio, SQLite journals, and backups.
